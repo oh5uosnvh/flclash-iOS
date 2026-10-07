@@ -111,6 +111,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
   }
 
+  override func sleep(completionHandler: @escaping () -> Void) {
+    logger.info("sleep: suspending tunnel")
+    NECoreBridge.setSuspended(true)
+    completionHandler()
+  }
+
+  override func wake() {
+    logger.info("wake: resuming tunnel")
+    NECoreBridge.setSuspended(false)
+  }
+
   override func stopTunnel(
     with reason: NEProviderStopReason,
     completionHandler: @escaping () -> Void

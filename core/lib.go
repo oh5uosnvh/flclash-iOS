@@ -24,6 +24,7 @@ import (
 	"github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener/sing_tun"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/tunnel"
 )
 
 var (
@@ -378,6 +379,15 @@ func stopTun() {
 	handleStopTun()
 	if isRunning.Load() {
 		handleStopListener()
+	}
+}
+
+//export suspend
+func suspend(suspended bool) {
+	if suspended {
+		tunnel.OnSuspend()
+	} else {
+		tunnel.OnRunning()
 	}
 }
 

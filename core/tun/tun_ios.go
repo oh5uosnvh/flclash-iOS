@@ -67,7 +67,10 @@ func Start(fd int, config Options) *sing_tun.Listener {
 		SendMsgX:               config.SendMsgX,
 		DNSHijack:              dnsHijack,
 		AutoRoute:              false,
-		AutoDetectInterface:    false,
+		// iOS NE has no auto-route: bind outbound sockets to the physical
+		// interface via the route-socket monitor so a Wi-Fi <-> cellular
+		// switch self-heals (flush iface cache, reset resolver, re-bind).
+		AutoDetectInterface:    true,
 		Inet4Address:           prefix4,
 		Inet6Address:           prefix6,
 		MTU:                    config.MTU,
