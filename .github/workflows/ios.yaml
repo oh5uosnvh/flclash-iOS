@@ -84,6 +84,9 @@ jobs:
             github.com/metacubex/mihomo/common/convert \
             github.com/metacubex/sing-shadowsocks2/shadowaead
 
+      - name: Install dependencies
+        run: flutter pub get
+
       - name: Build unsigned IPA
         run: >-
           dart setup.dart ios --no-codesign
