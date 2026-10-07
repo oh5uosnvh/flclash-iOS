@@ -28,11 +28,15 @@ final class PacketTunnelNetworkConfiguration {
     "192.168.0.0/16",
     "224.0.0.0/4",
     "255.128.0.0/9",
-  ].compactMap { entry in
-    guard let cidr = CIDR(entry) else { return nil }
+  ].compactMap { entry -> NEIPv4Route? in
+    guard let cidr = CIDR(entry),
+      let subnetMask = ipv4SubnetMaskStatic(prefixLength: cidr.prefixLength)
+    else {
+      return nil
+    }
     return NEIPv4Route(
       destinationAddress: cidr.address,
-      subnetMask: self.ipv4SubnetMask(prefixLength: cidr.prefixLength)
+      subnetMask: subnetMask
     )
   }
 
@@ -48,6 +52,8 @@ final class PacketTunnelNetworkConfiguration {
       addresses: [ipv4Address],
       subnetMasks: [ipv4SubnetMask]
     )
+    let isBypassPrivateTable = options.routeAddress.contains("1.0.0.0/8")
+      && options.routeAddress.contains("128.0.0.0/3")
     let ipv4Routes = options.routeAddress.compactMap {
       route -> NEIPv4Route? in
       guard route.contains("."),
@@ -70,9 +76,7 @@ final class PacketTunnelNetworkConfiguration {
     // to the physical interface (seen as a sudden drop ~10s after connect).
     // Expressing the same intent as default-route-plus-exclusions gives the
     // tunnel ownership of the default route, which iOS honours.
-    if ipv4Routes.contains(where: { route in
-      route.destinationAddress == "1.0.0.0" && route.subnetMask == "255.0.0.0"
-    }) {
+    if isBypassPrivateTable {
       ipv4Settings.includedRoutes = [.default()]
       ipv4Settings.excludedRoutes = bypassPrivateExcludedRoutes
     } else {
@@ -197,6 +201,10 @@ final class PacketTunnelNetworkConfiguration {
   }
 
   private func ipv4SubnetMask(prefixLength: Int) -> String? {
+    Self.ipv4SubnetMaskStatic(prefixLength: prefixLength)
+  }
+
+  private static func ipv4SubnetMaskStatic(prefixLength: Int) -> String? {
     guard (0...32).contains(prefixLength) else {
       return nil
     }
