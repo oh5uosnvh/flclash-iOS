@@ -37,8 +37,14 @@ jobs:
         run: |
           set -e
           test -f core/mihomo/go.mod || { echo 'vendored kernel missing' >&2; exit 1; }
-          grep -q 'xhttp_private' core/mihomo/adapter/parser.go || {
+          grep -q 'case "xhttp":' core/mihomo/adapter/parser.go || {
             echo 'xhttp registration missing from vendored kernel' >&2; exit 1;
+          }
+          grep -q 'case "x365":' core/mihomo/adapter/parser.go || {
+            echo 'x365 registration missing from vendored kernel' >&2; exit 1;
+          }
+          grep -q 'case "oppa":' core/mihomo/adapter/parser.go || {
+            echo 'oppa registration missing from vendored kernel' >&2; exit 1;
           }
           test -f core/mihomo/transport/blackstonexhttp/conn.go || {
             echo 'blackstonexhttp transport missing' >&2; exit 1;
