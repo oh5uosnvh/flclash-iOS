@@ -16,6 +16,26 @@ final class PacketTunnelNetworkConfiguration {
     category: "PacketTunnelNetworkConfiguration"
   )
 
+  /// Complement of the bypassPrivate route table (the reserved and private
+  /// ranges the table deliberately omits), used when the default route is
+  /// claimed instead of enumerating every global unicast prefix.
+  private lazy var bypassPrivateExcludedRoutes: [NEIPv4Route] = [
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "224.0.0.0/4",
+    "255.128.0.0/9",
+  ].compactMap { entry in
+    guard let cidr = CIDR(entry) else { return nil }
+    return NEIPv4Route(
+      destinationAddress: cidr.address,
+      subnetMask: self.ipv4SubnetMask(prefixLength: cidr.prefixLength)
+    )
+  }
+
   func makeSettings(
     for options: PacketTunnelVPNOptions
   ) -> NEPacketTunnelNetworkSettings {
@@ -43,9 +63,23 @@ final class PacketTunnelNetworkConfiguration {
         subnetMask: subnetMask
       )
     }
-    ipv4Settings.includedRoutes = ipv4Routes.isEmpty
-      ? [.default()]
-      : ipv4Routes
+    // The bypassPrivate route table enumerates the global unicast space as
+    // ~255 explicit prefixes. With enforceRoutes off, iOS re-evaluates the
+    // path shortly after the tunnel comes up and, finding no default route
+    // claim, tears the partial routes back down — traffic then falls through
+    // to the physical interface (seen as a sudden drop ~10s after connect).
+    // Expressing the same intent as default-route-plus-exclusions gives the
+    // tunnel ownership of the default route, which iOS honours.
+    if ipv4Routes.contains(where: { route in
+      route.destinationAddress == "1.0.0.0" && route.subnetMask == "255.0.0.0"
+    }) {
+      ipv4Settings.includedRoutes = [.default()]
+      ipv4Settings.excludedRoutes = bypassPrivateExcludedRoutes
+    } else {
+      ipv4Settings.includedRoutes = ipv4Routes.isEmpty
+        ? [.default()]
+        : ipv4Routes
+    }
     settings.ipv4Settings = ipv4Settings
 
     var ipv6RouteCount = 0
@@ -67,9 +101,19 @@ final class PacketTunnelNetworkConfiguration {
         )
       }
       ipv6RouteCount = ipv6Routes.count
-      ipv6Settings.includedRoutes = ipv6Routes.isEmpty
-        ? [.default()]
-        : ipv6Routes
+      if ipv6RouteCount >= 5 {
+        // bypassPrivate v6 table: claim the default route with the link-local
+        // and multicast space excluded, mirroring the IPv4 handling above.
+        ipv6Settings.includedRoutes = [.default()]
+        ipv6Settings.excludedRoutes = [
+          NEIPv6Route(destinationAddress: "fe80::", networkPrefixLength: 10),
+          NEIPv6Route(destinationAddress: "::1", networkPrefixLength: 128),
+        ]
+      } else {
+        ipv6Settings.includedRoutes = ipv6Routes.isEmpty
+          ? [.default()]
+          : ipv6Routes
+      }
       settings.ipv6Settings = ipv6Settings
     }
 
