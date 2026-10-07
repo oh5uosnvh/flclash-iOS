@@ -1,0 +1,112 @@
+name: ios-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ios_bundle_id:
+        description: 'iOS bundle identifier (defaults to cc.llyufeng.flclash.dev)'
+        required: false
+        default: 'cc.llyufeng.flclash.dev'
+      build_env:
+        description: 'Application environment'
+        required: false
+        default: 'stable'
+        type: choice
+        options:
+          - stable
+          - pre
+          - dev
+
+env:
+  FLUTTER_VERSION: '3.47.6'
+  GO_VERSION: '1.26.8'
+
+jobs:
+  build-ios:
+    name: iOS unsigned IPA (private protocols)
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify vendored private kernel markers
+        shell: bash
+        run: |
+          set -e
+          test -f core/mihomo/go.mod || { echo 'vendored kernel missing' >&2; exit 1; }
+          grep -q 'xhttp_private' core/mihomo/adapter/parser.go || {
+            echo 'xhttp registration missing from vendored kernel' >&2; exit 1;
+          }
+          test -f core/mihomo/transport/blackstonexhttp/conn.go || {
+            echo 'blackstonexhttp transport missing' >&2; exit 1;
+          }
+          test -f core/sing-shadowsocks2-viewturbo/shadowaead/vt_auth.go || {
+            echo 'viewTurbo shadowaead missing' >&2; exit 1;
+          }
+          grep -q 'sing-shadowsocks2-viewturbo' core/go.mod || {
+            echo 'viewTurbo replace missing from core/go.mod' >&2; exit 1;
+          }
+          echo 'vendored private kernel + viewTurbo verified'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: core/go.sum
+
+      - name: Go protocol tests (vendored kernel)
+        working-directory: core
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go test -count=1 -timeout 20m \
+            github.com/metacubex/mihomo/adapter/outbound \
+            github.com/metacubex/mihomo/transport/blackstonexhttp \
+            github.com/metacubex/mihomo/transport/x365 \
+            github.com/metacubex/mihomo/transport/oppa \
+            github.com/metacubex/mihomo/transport/anytls/... \
+            github.com/metacubex/mihomo/common/convert \
+            github.com/metacubex/sing-shadowsocks2/shadowaead
+
+      - name: Build unsigned IPA
+        run: >-
+          dart setup.dart ios --no-codesign
+          --env ${{ github.event.inputs.build_env || 'stable' }}
+          --ios-bundle-id '${{ github.event.inputs.ios_bundle_id || 'cc.llyufeng.flclash.dev' }}'
+          -v
+
+      - name: Collect IPA
+        shell: bash
+        run: |
+          set -e
+          ls -la dist/ || true
+          IPA=$(find dist -maxdepth 1 -name '*.ipa' | head -n 1)
+          test -n "$IPA" || { echo 'no IPA produced by setup.dart' >&2; exit 1; }
+          echo "IPA: $IPA"
+          mkdir -p /tmp/ipacheck && cd /tmp/ipacheck
+          unzip -q "$GITHUB_WORKSPACE/$IPA" -d unpacked
+          APP=$(find unpacked/Payload -maxdepth 1 -type d -name '*.app' | head -n 1)
+          test -f "$APP/PlugIns/NECore.appex/NECore" || {
+            echo 'NECore.appex missing from IPA' >&2; exit 1;
+          }
+          echo "--- embedded provisioning-free entitlements (from Runner) ---"
+          strings "$APP/Runner" | grep -m1 'application-identifier' || true
+          echo "IPA structure OK"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlClash-ios-arm64-unsigned
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 30

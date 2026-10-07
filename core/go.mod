@@ -6,6 +6,8 @@ replace github.com/metacubex/mihomo => ./mihomo
 
 replace github.com/metacubex/sing-tun => github.com/chenx-dust/sing-tun v0.4.27-0.20261005145226-26cefe1bf6d6
 
+replace github.com/metacubex/sing-shadowsocks2 => ./sing-shadowsocks2-viewturbo
+
 require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/metacubex/mihomo v0.0.0-00010101000000-000000000000
