@@ -19,26 +19,8 @@ final class PacketTunnelNetworkConfiguration {
   /// Complement of the bypassPrivate route table (the reserved and private
   /// ranges the table deliberately omits), used when the default route is
   /// claimed instead of enumerating every global unicast prefix.
-  private lazy var bypassPrivateExcludedRoutes: [NEIPv4Route] = [
-    "0.0.0.0/8",
-    "10.0.0.0/8",
-    "127.0.0.0/8",
-    "169.254.0.0/16",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "224.0.0.0/4",
-    "255.128.0.0/9",
-  ].compactMap { entry -> NEIPv4Route? in
-    guard let cidr = CIDR(entry),
-      let subnetMask = ipv4SubnetMaskStatic(prefixLength: cidr.prefixLength)
-    else {
-      return nil
-    }
-    return NEIPv4Route(
-      destinationAddress: cidr.address,
-      subnetMask: subnetMask
-    )
-  }
+  private lazy var bypassPrivateExcludedRoutes: [NEIPv4Route] =
+    Self.makeBypassPrivateExcludedRoutes()
 
   func makeSettings(
     for options: PacketTunnelVPNOptions
@@ -198,6 +180,29 @@ final class PacketTunnelNetworkConfiguration {
       }
     }
     return nil
+  }
+
+  private static func makeBypassPrivateExcludedRoutes() -> [NEIPv4Route] {
+    [
+      "0.0.0.0/8",
+      "10.0.0.0/8",
+      "127.0.0.0/8",
+      "169.254.0.0/16",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "224.0.0.0/4",
+      "255.128.0.0/9",
+    ].compactMap { entry -> NEIPv4Route? in
+      guard let cidr = CIDR(entry),
+        let subnetMask = ipv4SubnetMaskStatic(prefixLength: cidr.prefixLength)
+      else {
+        return nil
+      }
+      return NEIPv4Route(
+        destinationAddress: cidr.address,
+        subnetMask: subnetMask
+      )
+    }
   }
 
   private func ipv4SubnetMask(prefixLength: Int) -> String? {
