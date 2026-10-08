@@ -201,4 +201,14 @@ static void NECoreSystemLog(const char *level, const char *message) {
   neReport((char *)cMsg);
 }
 
++ (void)forceGc {
+  [self initializeBridge];
+  forceGC();
+}
+
++ (void)releaseConfig {
+  [self initializeBridge];
+  releaseConfig();
+}
+
 @end

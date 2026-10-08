@@ -21,6 +21,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     logger.info("startTunnel begin")
     NECoreBridge.neReport("startTunnel begin")
     startMemoryProbe()
+    startResourceHeartbeat()
     sharedStateStore.clearRunTime()
     reloadControlWidget()
     guard let snapshot = sharedStateStore.loadVPNOptionsSnapshot() else {
@@ -130,8 +131,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     completionHandler: @escaping () -> Void
   ) {
     logger.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
-    NECoreBridge.neReport("stopTunnel reason=\(reason.rawValue) availableMem=\(Self.availableMemoryMB())MB")
+    NECoreBridge.neReport("stopTunnel reason=\(reason.rawValue) availableMem=\(Self.availableMemoryMB())MB footprint=\(Self.footprintMB())MB")
     stopMemoryProbe()
+    stopResourceHeartbeat()
     sharedStateStore.clearRunTime()
     reloadControlWidget()
     eventQueue.stop()
@@ -275,8 +277,18 @@ private enum PacketTunnelProviderError: LocalizedError {
 /// shows whether jetsam pressure precedes the ~10s tunnel death. The probe
 /// stops itself when the extension is torn down.
 private var memoryProbeTimer: DispatchSourceTimer?
+private var memoryPressureSource: DispatchSourceMemoryPressure?
+private var resourceHeartbeatTimer: DispatchSourceTimer?
+private var lastReclaimUptime: TimeInterval = 0
 
 extension PacketTunnelProvider {
+  /// Cooldown between reclaim passes so a single pressure spike cannot
+  /// thrash the live connection pools.
+  static let reclaimCooldown: TimeInterval = 20
+  /// Reclaim thresholds on os_proc_available_memory headroom.
+  static let warningAvailableMB = 12
+  static let criticalAvailableMB = 6
+
   static func availableMemoryMB() -> Int {
     let available = os_proc_available_memory()
     if available == 0 {
@@ -285,14 +297,31 @@ extension PacketTunnelProvider {
     return Int(available) / 1_048_576
   }
 
+  static func footprintMB() -> Int {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
+    )
+    let kr = withUnsafeMutablePointer(to: &info) { ptr in
+      ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+      }
+    }
+    guard kr == KERN_SUCCESS else { return 0 }
+    return Int(info.phys_footprint) / 1_048_576
+  }
+
   func startMemoryProbe() {
     stopMemoryProbe()
-    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-    timer.schedule(deadline: .now() + 5, repeating: 10)
+    NECoreBridge.neReport(
+      "memprobe armed available=\(Self.availableMemoryMB())MB footprint=\(Self.footprintMB())MB"
+    )
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
+    timer.schedule(deadline: .now() + 3, repeating: 5)
     timer.setEventHandler { [weak self] in
       guard let self else { return }
       NECoreBridge.neReport(
-        "memprobe available=\(Self.availableMemoryMB())MB"
+        "memprobe available=\(Self.availableMemoryMB())MB footprint=\(Self.footprintMB())MB"
       )
       _ = self
     }
@@ -303,5 +332,73 @@ extension PacketTunnelProvider {
   func stopMemoryProbe() {
     memoryProbeTimer?.cancel()
     memoryProbeTimer = nil
+  }
+
+  /// Native resource heartbeat: watches the jetsam footprint and reacts to
+  /// system memory-pressure events by forcing the Go core to release memory.
+  /// Same loop the working reference build runs (threshold + cooldown +
+  /// reclaim), aligned on the os_memory_pressure / memory_pressure_* events.
+  func startResourceHeartbeat() {
+    stopResourceHeartbeat()
+
+    let pressure = DispatchSource.makeMemoryPressureSource(
+      eventMask: [.warning, .critical],
+      queue: DispatchQueue.global(qos: .userInitiated)
+    )
+    pressure.setEventHandler { [weak self] in
+      guard let self, let source = self.memoryPressureSource else { return }
+      let data = source.data
+      if data.contains(.critical) {
+        self.reclaimMemory(level: "critical")
+      } else if data.contains(.warning) {
+        self.reclaimMemory(level: "warning")
+      }
+    }
+    pressure.resume()
+    memoryPressureSource = pressure
+
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
+    timer.schedule(deadline: .now() + 2, repeating: 3)
+    timer.setEventHandler { [weak self] in
+      guard let self else { return }
+      let available = Self.availableMemoryMB()
+      let footprint = Self.footprintMB()
+      NECoreBridge.neReport(
+        "heartbeat footprint_mb=\(footprint) available_mb=\(available)"
+      )
+      if available <= Self.criticalAvailableMB {
+        self.reclaimMemory(level: "critical")
+      } else if available <= Self.warningAvailableMB {
+        self.reclaimMemory(level: "warning")
+      }
+    }
+    timer.resume()
+    resourceHeartbeatTimer = timer
+  }
+
+  func stopResourceHeartbeat() {
+    resourceHeartbeatTimer?.cancel()
+    resourceHeartbeatTimer = nil
+    memoryPressureSource?.cancel()
+    memoryPressureSource = nil
+  }
+
+  func reclaimMemory(level: String) {
+    let now = ProcessInfo.processInfo.systemUptime
+    guard now - lastReclaimUptime >= Self.reclaimCooldown else {
+      return
+    }
+    lastReclaimUptime = now
+
+    let before = Self.footprintMB()
+    NECoreBridge.neReport("memory_pressure_\(level) footprint_mb=\(before)")
+    NECoreBridge.forceGc()
+    if level == "critical" {
+      NECoreBridge.releaseConfig()
+    }
+    let after = Self.footprintMB()
+    NECoreBridge.neReport(
+      "memory_pressure_reclaimed footprint_mb=\(after) before_mb=\(before)"
+    )
   }
 }

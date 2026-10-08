@@ -30,6 +30,8 @@ struct sockaddr_ctl {
 + (void)stopTun;
 + (void)setSuspended:(BOOL)suspended;
 + (void)neReport:(NSString *)message;
++ (void)forceGc;
++ (void)releaseConfig;
 
 @end
 

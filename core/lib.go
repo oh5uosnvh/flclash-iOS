@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -22,7 +24,9 @@ import (
 
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/process"
+	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/constant/features"
 	"github.com/metacubex/mihomo/listener/sing_tun"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
@@ -216,6 +220,43 @@ func stopTunLocked() {
 	tunHandler = nil
 }
 
+// memProbeOnce guards the single in-process memory reporter. It samples the
+// real Mach resident size (what jetsam enforces inside the NE) plus Go heap
+// stats every two seconds and pushes them straight through the event
+// channel. The series ends abruptly if the extension is SIGKILLed, which is
+// exactly the signal needed to separate "memory pinched to death" from
+// "system tore the tunnel down".
+var memProbeOnce sync.Once
+
+func startMemProbe() {
+	memProbeOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				payload := fmt.Sprintf(
+					"[MEM] footprint=%dMB rss=%dMB heap=%dMB sys=%dMB goroutines=%d",
+					procFootprintBytes()/1048576,
+					procRSSBytes()/1048576,
+					m.HeapAlloc/1048576,
+					m.Sys/1048576,
+					runtime.NumGoroutine(),
+				)
+				sendMessage(Message{
+					Type: LogMessage,
+					Data: StampedLogEvent{
+						LogLevel: log.INFO,
+						Payload:  payload,
+						Time:     time.Now().UnixMilli(),
+					},
+				})
+			}
+		}()
+	})
+}
+
 func handleStartTun(callback unsafe.Pointer, fd int, options t.Options) bool {
 	tunLock.Lock()
 	defer tunLock.Unlock()
@@ -227,6 +268,7 @@ func handleStartTun(callback unsafe.Pointer, fd int, options t.Options) bool {
 		logError("startTun was handed no tun descriptor")
 		return false
 	}
+	startMemProbe()
 	tunHandler = &TunHandler{
 		callback: callback,
 	}
@@ -409,6 +451,25 @@ func suspend(suspended bool) {
 		tunnel.OnSuspend()
 	} else {
 		tunnel.OnRunning()
+	}
+}
+
+//export releaseConfig
+func releaseConfig() {
+	handleReleaseConfig()
+}
+
+func handleReleaseConfig() {
+	// Aggressive memory reclaim used by the NE resource heartbeat when the
+	// footprint approaches the jetsam line: drop live proxy sessions (xhttp
+	// pools rebuild on demand), reset resolver caches, then hand memory back
+	// to the OS.
+	log.Infoln("[NE] releaseConfig: dropping live connections + caches")
+	tunnel.InvalidateAllProxies()
+	resolver.ResetConnection()
+	runtime.GC()
+	if features.Android || features.IOS {
+		debug.FreeOSMemory()
 	}
 }
 
