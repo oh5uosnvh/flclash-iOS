@@ -47,9 +47,9 @@ void main() {
     }
   });
 
-  test('TUN defaults to mips and preserves saved stack choices', () {
-    expect(const Tun().stack, TunStack.mips);
-    expect(Tun.fromJson({}).stack, TunStack.mips);
+  test('TUN defaults to mixed and preserves saved stack choices', () {
+    expect(const Tun().stack, TunStack.mixed);
+    expect(Tun.fromJson({}).stack, TunStack.mixed);
     for (final stack in TunStack.values) {
       final tun = Tun.fromJson({'stack': stack.name});
       expect(tun.stack, stack);
@@ -585,7 +585,7 @@ void main() {
       expect(patch.interfaceNameMode, InterfaceNameMode.clear);
       expect(patch.geodataLoader, GeodataLoader.memconservative);
       expect(patch.geositeMatcher, GeositeMatcher.succinct);
-      expect(patch.tun.stack, TunStack.mips);
+      expect(patch.tun.stack, TunStack.mixed);
       expect(patch.tun.congestionController, TunCongestionController.cubic);
       expect(patch.dns.enhancedMode, DnsMode.fakeIp);
     });

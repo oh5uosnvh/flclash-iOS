@@ -173,16 +173,16 @@ _Tun _$TunFromJson(Map<String, dynamic> json) => _Tun(
       $enumDecodeNullable(
         _$TunStackEnumMap,
         json['stack'],
-        unknownValue: TunStack.mips,
+        unknownValue: TunStack.mixed,
       ) ??
-      TunStack.mips,
+      TunStack.mixed,
   recvMsgX: json['recvmsgx'] as bool? ?? true,
   sendMsgX: json['sendmsgx'] as bool? ?? true,
   dnsHijack:
       (json['dns-hijack'] as List<dynamic>?)
           ?.map((e) => e as String)
           .toList() ??
-      const [],
+      const ['any:53'],
   routeAddress:
       (json['route-address'] as List<dynamic>?)
           ?.map((e) => e as String)

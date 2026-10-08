@@ -409,7 +409,15 @@ func updateGeneral(general *config.General, logging bool) {
 	inbound.SetTfo(general.InboundTfo)
 	inbound.SetMPTCP(general.InboundMPTCP)
 
-	keepalive.SetKeepAliveIdle(time.Duration(general.KeepAliveIdle) * time.Second)
+	// iOS NE: the app-side config never sets keep-alive-idle, and Go's darwin
+	// runtime forces Idle=0 to 15s probes on every outbound socket. Those early
+	// probes killed the long-lived xhttp pools (lly reference build ships
+	// keep-alive-idle: 600 via its profile template). Align the default.
+	keepAliveIdle := general.KeepAliveIdle
+	if keepAliveIdle == 0 && features.IOS {
+		keepAliveIdle = 600
+	}
+	keepalive.SetKeepAliveIdle(time.Duration(keepAliveIdle) * time.Second)
 	keepalive.SetKeepAliveInterval(time.Duration(general.KeepAliveInterval) * time.Second)
 	keepalive.SetDisableKeepAlive(general.DisableKeepAlive)
 

@@ -253,12 +253,12 @@ abstract class Tun with _$Tun {
     @Default(appName) String device,
     @Default(defaultTunMtu) int mtu,
     @JsonKey(name: 'auto-route') @Default(false) bool autoRoute,
-    @Default(TunStack.mips)
-    @JsonKey(unknownEnumValue: TunStack.mips)
+    @Default(TunStack.mixed)
+    @JsonKey(unknownEnumValue: TunStack.mixed)
     TunStack stack,
     @JsonKey(name: 'recvmsgx') @Default(true) bool recvMsgX,
     @JsonKey(name: 'sendmsgx') @Default(true) bool sendMsgX,
-    @JsonKey(name: 'dns-hijack') @Default([]) List<String> dnsHijack,
+    @JsonKey(name: 'dns-hijack') @Default(['any:53']) List<String> dnsHijack,
     @JsonKey(name: 'route-address') @Default([]) List<String> routeAddress,
     @JsonKey(name: 'strict-route') @Default(false) bool strictRoute,
     @JsonKey(name: 'disable-icmp-forwarding')
