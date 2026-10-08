@@ -87,3 +87,4 @@ devtools_options.yaml
 /coverage/lcov.info
 # Widget Preview related
 .widget_preview/
+core/core
