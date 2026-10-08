@@ -179,7 +179,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     logger.debug(
       "handleAppMessage bytes=\(messageData.count, privacy: .public)"
     )
-    eventQueue.markCoreResponsive()
     guard let completionHandler else {
       logger.warning("handleAppMessage ignored: missing completion handler")
       return
