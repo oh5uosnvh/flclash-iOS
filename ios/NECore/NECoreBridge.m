@@ -190,4 +190,15 @@ static void NECoreSystemLog(const char *level, const char *message) {
   suspend(suspended ? 1 : 0);
 }
 
++ (void)neReport:(NSString *)message {
+  if (message.length == 0) {
+    return;
+  }
+  const char *cMsg = message.UTF8String;
+  if (cMsg == NULL) {
+    return;
+  }
+  neReport((char *)cMsg);
+}
+
 @end

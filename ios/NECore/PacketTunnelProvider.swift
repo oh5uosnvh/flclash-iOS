@@ -19,6 +19,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     completionHandler: @escaping (Error?) -> Void
   ) {
     logger.info("startTunnel begin")
+    NECoreBridge.neReport("startTunnel begin")
+    startMemoryProbe()
     sharedStateStore.clearRunTime()
     reloadControlWidget()
     guard let snapshot = sharedStateStore.loadVPNOptionsSnapshot() else {
@@ -101,6 +103,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         self.logger.info(
           "NECoreBridge.startTun result=\(started, privacy: .public)"
         )
+        NECoreBridge.neReport("startTun result=\(started ? 1 : 0) availableMem=\(Self.availableMemoryMB())MB")
         if started {
           self.sharedStateStore.saveRunTime(vpnOptions: snapshot.data)
         }
@@ -127,6 +130,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     completionHandler: @escaping () -> Void
   ) {
     logger.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
+    NECoreBridge.neReport("stopTunnel reason=\(reason.rawValue) availableMem=\(Self.availableMemoryMB())MB")
+    stopMemoryProbe()
     sharedStateStore.clearRunTime()
     reloadControlWidget()
     eventQueue.stop()
@@ -262,5 +267,42 @@ private enum PacketTunnelProviderError: LocalizedError {
     case .couldNotStartCoreTun:
       return "could not start core TUN"
     }
+  }
+}
+
+// MARK: - Memory probe
+
+/// Reports the NE process memory headroom every few seconds so the app log
+/// shows whether jetsam pressure precedes the ~10s tunnel death. The probe
+/// stops itself when the extension is torn down.
+private var memoryProbeTimer: DispatchSourceTimer?
+
+extension PacketTunnelProvider {
+  static func availableMemoryMB() -> Int {
+    let available = os_proc_available_memory()
+    if available == 0 {
+      return 0
+    }
+    return Int(available) / 1_048_576
+  }
+
+  func startMemoryProbe() {
+    stopMemoryProbe()
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+    timer.schedule(deadline: .now() + 3, repeating: 3)
+    timer.setEventHandler { [weak self] in
+      guard let self else { return }
+      NECoreBridge.neReport(
+        "memprobe available=\(Self.availableMemoryMB())MB"
+      )
+      _ = self
+    }
+    timer.resume()
+    memoryProbeTimer = timer
+  }
+
+  func stopMemoryProbe() {
+    memoryProbeTimer?.cancel()
+    memoryProbeTimer = nil
   }
 }

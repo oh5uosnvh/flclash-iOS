@@ -382,6 +382,15 @@ func stopTun() {
 	}
 }
 
+//export neReport
+func neReport(message *C.char) {
+	msg := C.GoString(message)
+	if msg == "" {
+		return
+	}
+	log.Infoln("[NE] %s", msg)
+}
+
 //export suspend
 func suspend(suspended bool) {
 	if suspended {
