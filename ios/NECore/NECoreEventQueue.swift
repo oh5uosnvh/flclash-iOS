@@ -4,14 +4,13 @@ import os
 final class NECoreEventQueue {
   private let sharedStateStore: PacketTunnelSharedStateStore
   private let eventQueueDirectoryName = "core-events"
-  private let maxEventQueueFiles = 10
+  private let maxEventQueueFiles = 50
   private let logger = Logger(
     subsystem: PacketTunnelEnvironment.extensionBundleIdentifier,
     category: "NECoreEventQueue"
   )
 
   private var eventsSincePrune = 0
-  private var coreActive = true
 
   init(sharedStateStore: PacketTunnelSharedStateStore) {
     self.sharedStateStore = sharedStateStore
@@ -33,15 +32,7 @@ final class NECoreEventQueue {
     NECoreBridge.setEventListener(nil)
   }
 
-  func markCoreResponsive() {
-    coreActive = true
-  }
-
   private func enqueue(_ event: Data) {
-    guard coreActive else {
-      logger.warning("enqueue skipped: core is not active")
-      return
-    }
     guard let directory = eventQueueDirectory() else {
       logger.error("enqueue failed: missing app group dir")
       return
@@ -77,17 +68,12 @@ final class NECoreEventQueue {
 
   private func prune(in directory: URL) {
     var files = eventFiles(in: directory)
-    var overflowCount = files.count - maxEventQueueFiles
-    if overflowCount > 0 {
-      coreActive = false
-      logger.warning(
-        "prune overflow=\(overflowCount, privacy: .public), set core inactive"
-      )
-    }
+    let overflowCount = files.count - maxEventQueueFiles
 
-    while overflowCount > 0 && !files.isEmpty {
+    var remaining = overflowCount
+    while remaining > 0 && !files.isEmpty {
       removeOldestEventFile(&files)
-      overflowCount -= 1
+      remaining -= 1
     }
   }
 

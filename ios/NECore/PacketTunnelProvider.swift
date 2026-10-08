@@ -289,7 +289,7 @@ extension PacketTunnelProvider {
   func startMemoryProbe() {
     stopMemoryProbe()
     let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-    timer.schedule(deadline: .now() + 3, repeating: 3)
+    timer.schedule(deadline: .now() + 5, repeating: 10)
     timer.setEventHandler { [weak self] in
       guard let self else { return }
       NECoreBridge.neReport(
