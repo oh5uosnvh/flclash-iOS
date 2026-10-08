@@ -389,6 +389,17 @@ func neReport(message *C.char) {
 		return
 	}
 	log.Infoln("[NE] %s", msg)
+	// NE process has no log subscriber wired to the app log page, so also
+	// push the event directly through the event channel (same path the log
+	// notifier uses) to make sure lifecycle events survive without startLog.
+	sendMessage(Message{
+		Type: LogMessage,
+		Data: StampedLogEvent{
+			LogLevel: log.LevelInfo,
+			Payload:  "[NE] " + msg,
+			Time:     time.Now().UnixMilli(),
+		},
+	})
 }
 
 //export suspend
