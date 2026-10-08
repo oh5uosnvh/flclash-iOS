@@ -351,7 +351,7 @@ void main() {
       expect(config.geodataLoader, GeodataLoader.memconservative);
       expect(config.geositeMatcher, GeositeMatcher.succinct);
       expect(config.tun.mtu, defaultTunMtu);
-      expect(config.tun.dnsHijack, isEmpty);
+      expect(config.tun.dnsHijack, ['any:53']);
       expect(config.tun.strictRoute, false);
       expect(config.tun.disableIcmpForwarding, false);
       expect(config.tun.endpointIndependentNat, false);
