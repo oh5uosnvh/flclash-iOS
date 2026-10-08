@@ -307,6 +307,18 @@ func (v *X365) Close() error {
 	return errors.Join(errs...)
 }
 
+// FastProbe implements lightweight health-check probing for (*Proxy).URLTest:
+// bare TCP dial to the node address. The full-session path (REALITY handshake
+// + xhttp session + x365 handshake) is far too expensive to run per node per
+// health-check round inside the iOS NetworkExtension memory budget.
+func (v *X365) FastProbe(ctx context.Context) error {
+	conn, err := v.dialer.DialContext(ctx, "tcp", v.addr)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
 func NewX365(option X365Option) (*X365, error) {
 	client, err := x365.NewClient(option.UUID)
 	if err != nil {

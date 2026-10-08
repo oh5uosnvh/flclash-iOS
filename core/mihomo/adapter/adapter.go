@@ -203,6 +203,36 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 
 	}()
 
+	// Heavy-protocol outbounds (x365/xhttp) opt out of full-session probing.
+	// A full REALITY+xhttp+x365 session per node per health-check round pushed
+	// a 100+ node subscription past the iOS NetworkExtension memory cap, so
+	// jetsam SIGKILLed the extension ~10s after tunnel start (crash loop,
+	// zero core logs). FastProbe = bare TCP dial to the node address.
+	// Unwrap autoCloseProxyAdapter (and any future wrapper) to reach the real
+	// adapter before probing.
+	{
+		adapter := p.ProxyAdapter
+		for adapter != nil {
+			if fp, ok := adapter.(interface {
+				FastProbe(ctx context.Context) error
+			}); ok {
+				start := time.Now()
+				if err = fp.FastProbe(ctx); err == nil {
+					t = uint16(time.Since(start).Milliseconds())
+					satisfied = true
+				}
+				return
+			}
+			u, ok := adapter.(interface {
+				UnwrapAdapter() C.ProxyAdapter
+			})
+			if !ok {
+				break
+			}
+			adapter = u.UnwrapAdapter()
+		}
+	}
+
 	unifiedDelay := UnifiedDelay.Load()
 
 	addr, err := urlToMetadata(url)

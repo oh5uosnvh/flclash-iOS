@@ -391,6 +391,10 @@ type autoCloseProxyAdapter struct {
 	closeErr  error
 }
 
+func (p *autoCloseProxyAdapter) UnwrapAdapter() C.ProxyAdapter {
+	return p.ProxyAdapter
+}
+
 func (p *autoCloseProxyAdapter) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
 	c, err := p.ProxyAdapter.DialContext(ctx, metadata)
 	if err != nil {

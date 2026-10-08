@@ -202,6 +202,17 @@ func (x *XHTTP) ProxyInfo() C.ProxyInfo {
 	return info
 }
 
+// FastProbe implements lightweight health-check probing for (*Proxy).URLTest:
+// bare TCP dial to the node address (full blackstonexhttp sessions are too
+// expensive per health-check round under the iOS NE memory cap).
+func (x *XHTTP) FastProbe(ctx context.Context) error {
+	conn, err := x.dialer.DialContext(ctx, "tcp", x.addr)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
 func NewXHTTP(option XHTTPOption) (*XHTTP, error) {
 	if option.Cipher != "" && option.Cipher != "aes-128-ctr" {
 		return nil, fmt.Errorf("xhttp: unsupported cipher %q", option.Cipher)
