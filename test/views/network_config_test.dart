@@ -138,6 +138,10 @@ void main() {
     testWidgets('the congestion controller picker writes the chosen value', (
       tester,
     ) async {
+      container
+          .read(patchClashConfigProvider.notifier)
+          .update((state) => state.copyWith.tun(stack: TunStack.mips));
+
       await pumpItem(tester, const TunCongestionControllerItem());
       final initial = container
           .read(patchClashConfigProvider)

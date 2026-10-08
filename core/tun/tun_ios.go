@@ -60,13 +60,13 @@ func Start(fd int, config Options) *sing_tun.Listener {
 	}
 
 	options := LC.Tun{
-		Enable:                 true,
-		Device:                 "FlClash",
-		Stack:                  tunStack,
-		RecvMsgX:               config.RecvMsgX,
-		SendMsgX:               config.SendMsgX,
-		DNSHijack:              dnsHijack,
-		AutoRoute:              false,
+		Enable:    true,
+		Device:    "FlClash",
+		Stack:     tunStack,
+		RecvMsgX:  config.RecvMsgX,
+		SendMsgX:  config.SendMsgX,
+		DNSHijack: dnsHijack,
+		AutoRoute: false,
 		// iOS NE has no auto-route: bind outbound sockets to the physical
 		// interface via the route-socket monitor so a Wi-Fi <-> cellular
 		// switch self-heals (flush iface cache, reset resolver, re-bind).
