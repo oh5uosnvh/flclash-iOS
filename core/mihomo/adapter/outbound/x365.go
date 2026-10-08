@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/convert"
@@ -62,6 +63,12 @@ type X365 struct {
 
 	realityConfig *tlsC.RealityConfig
 	echConfig     *ech.Config
+
+	// lazy transport init: gun/xhttp clients are built on first real dial
+	// (see ensureLazy) so a 100+-node subscription does not pay their cost
+	// while the NE is near its memory budget.
+	initOnce sync.Once
+	initErr  error
 }
 
 type X365Option struct {
@@ -224,6 +231,9 @@ func (v *X365) streamTLSConn(ctx context.Context, conn net.Conn, isH2 bool) (net
 }
 
 func (v *X365) dialContext(ctx context.Context) (c net.Conn, err error) {
+	if err = v.ensureLazy(); err != nil {
+		return nil, err
+	}
 	switch v.option.Network {
 	case "grpc": // gun transport
 		return v.gunClient.Dial()
@@ -358,155 +368,167 @@ func NewX365(option X365Option) (*X365, error) {
 		if len(option.HTTP2Opts.Host) == 0 {
 			option.HTTP2Opts.Host = append(option.HTTP2Opts.Host, "www.example.com")
 		}
-	case "grpc":
-		dialFn := func(ctx context.Context, network, addr string) (net.Conn, error) {
-			c, err := v.dialer.DialContext(ctx, "tcp", v.addr)
-			if err != nil {
-				return nil, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
-			}
-			return c, nil
-		}
-
-		gunConfig := &gun.Config{
-			ServiceName:  option.GrpcOpts.GrpcServiceName,
-			UserAgent:    option.GrpcOpts.GrpcUserAgent,
-			Host:         option.ServerName,
-			PingInterval: option.GrpcOpts.PingInterval,
-		}
-		if option.ServerName == "" {
-			gunConfig.Host = v.addr
-		}
-		var tlsConfig *vmess.TLSConfig
-		if option.TLS {
-			tlsConfig = &vmess.TLSConfig{
-				Host:              option.ServerName,
-				SkipCertVerify:    option.SkipCertVerify,
-				FingerPrint:       option.Fingerprint,
-				Certificate:       option.Certificate,
-				PrivateKey:        option.PrivateKey,
-				ClientFingerprint: option.ClientFingerprint,
-				NextProtos:        []string{"h2"},
-				ECH:               v.echConfig,
-				Reality:           v.realityConfig,
-			}
-			if option.ServerName == "" {
-				host, _, _ := net.SplitHostPort(v.addr)
-				tlsConfig.Host = host
-			}
-		}
-
-		v.gunClient = gun.NewClient(
-			func() *gun.Transport {
-				return gun.NewTransport(dialFn, tlsConfig, gunConfig)
-			},
-			option.GrpcOpts.MaxConnections,
-			option.GrpcOpts.MinStreams,
-			option.GrpcOpts.MaxStreams,
-		)
-	case "xhttp":
-		requestHost := v.option.XHTTPOpts.Host
-		if requestHost == "" {
-			if v.option.ServerName != "" {
-				requestHost = v.option.ServerName
-			} else {
-				requestHost = v.option.Server
-			}
-		}
-
-		var hKeepAlivePeriod time.Duration
-
-		var reuseCfg *xhttp.ReuseConfig
-		if option.XHTTPOpts.ReuseSettings != nil {
-			reuseCfg = &xhttp.ReuseConfig{
-				MaxConcurrency:   option.XHTTPOpts.ReuseSettings.MaxConcurrency,
-				MaxConnections:   option.XHTTPOpts.ReuseSettings.MaxConnections,
-				CMaxReuseTimes:   option.XHTTPOpts.ReuseSettings.CMaxReuseTimes,
-				HMaxRequestTimes: option.XHTTPOpts.ReuseSettings.HMaxRequestTimes,
-				HMaxReusableSecs: option.XHTTPOpts.ReuseSettings.HMaxReusableSecs,
-			}
-			hKeepAlivePeriod = time.Duration(option.XHTTPOpts.ReuseSettings.HKeepAlivePeriod) * time.Second
-		}
-
-		cfg := &xhttp.Config{
-			Host:                 requestHost,
-			Path:                 v.option.XHTTPOpts.Path,
-			Mode:                 v.option.XHTTPOpts.Mode,
-			Headers:              prepareX365XHTTPHeaders(v.option.XHTTPOpts.Headers),
-			NoGRPCHeader:         v.option.XHTTPOpts.NoGRPCHeader,
-			XPaddingBytes:        v.option.XHTTPOpts.XPaddingBytes,
-			XPaddingObfsMode:     v.option.XHTTPOpts.XPaddingObfsMode,
-			XPaddingKey:          v.option.XHTTPOpts.XPaddingKey,
-			XPaddingHeader:       v.option.XHTTPOpts.XPaddingHeader,
-			XPaddingPlacement:    v.option.XHTTPOpts.XPaddingPlacement,
-			XPaddingMethod:       v.option.XHTTPOpts.XPaddingMethod,
-			UplinkHTTPMethod:     v.option.XHTTPOpts.UplinkHTTPMethod,
-			SessionPlacement:     v.option.XHTTPOpts.SessionPlacement,
-			SessionKey:           v.option.XHTTPOpts.SessionKey,
-			SeqPlacement:         v.option.XHTTPOpts.SeqPlacement,
-			SeqKey:               v.option.XHTTPOpts.SeqKey,
-			UplinkDataPlacement:  v.option.XHTTPOpts.UplinkDataPlacement,
-			UplinkDataKey:        v.option.XHTTPOpts.UplinkDataKey,
-			UplinkChunkSize:      v.option.XHTTPOpts.UplinkChunkSize,
-			ScMaxEachPostBytes:   v.option.XHTTPOpts.ScMaxEachPostBytes,
-			ScMinPostsIntervalMs: v.option.XHTTPOpts.ScMinPostsIntervalMs,
-			ReuseConfig:          reuseCfg,
-		}
-
-		makeTransport := func() mihomoHttp.RoundTripper {
-			return xhttp.NewTransport(
-				func(ctx context.Context) (net.Conn, error) {
-					return v.dialer.DialContext(ctx, "tcp", v.addr)
-				},
-				func(ctx context.Context, raw net.Conn, isH2 bool) (net.Conn, error) {
-					return v.streamTLSConn(ctx, raw, isH2)
-				},
-				func(ctx context.Context, cfg *quic.Config) (*quic.Conn, error) {
-					host, _, _ := net.SplitHostPort(v.addr)
-					tlsOpts := &vmess.TLSConfig{
-						Host:              host,
-						SkipCertVerify:    v.option.SkipCertVerify,
-						FingerPrint:       v.option.Fingerprint,
-						Certificate:       v.option.Certificate,
-						PrivateKey:        v.option.PrivateKey,
-						ClientFingerprint: v.option.ClientFingerprint,
-						ECH:               v.echConfig,
-						Reality:           v.realityConfig,
-						NextProtos:        []string{"h3"},
-					}
-					if v.option.ServerName != "" {
-						tlsOpts.Host = v.option.ServerName
-					}
-					if !v.option.TLS {
-						return nil, errors.New("xhttp HTTP/3 requires TLS")
-					}
-					if v.realityConfig != nil {
-						return nil, errors.New("xhttp HTTP/3 does not support reality")
-					}
-					tlsConfig, err := tlsOpts.ToStdConfig()
-					if err != nil {
-						return nil, err
-					}
-
-					err = v.echConfig.ClientHandle(ctx, tlsConfig)
-					if err != nil {
-						return nil, err
-					}
-					_, quicConn, err := tuicCommon.DialQuic(ctx, v.addr, v.DialOptions(), v.dialer, tlsConfig, cfg, tuicCommon.DialQuicOption{Early: true})
-					if err != nil {
-						return nil, err
-					}
-					return quicConn, nil
-				},
-				v.option.ALPN,
-				hKeepAlivePeriod,
-			)
-		}
-
-		v.xhttpClient, err = xhttp.NewClient(cfg, makeTransport, nil, v.realityConfig != nil)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	return v, nil
+}
+
+// ensureLazy builds the per-network heavy transports (gun/xhttp clients and
+// their pools) on first real dial instead of at construction time. A
+// 100+-node subscription constructs every outbound while the NE is already
+// close to its jetsam budget; deferring these keeps the load-phase peak off
+// the line. The wire protocol is untouched - only the construction timing
+// moves, mirroring the working reference build's lazyInit.
+func (v *X365) ensureLazy() error {
+	v.initOnce.Do(func() {
+		option := *v.option
+		switch option.Network {
+		case "grpc":
+			dialFn := func(ctx context.Context, network, addr string) (net.Conn, error) {
+				c, err := v.dialer.DialContext(ctx, "tcp", v.addr)
+				if err != nil {
+					return nil, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
+				}
+				return c, nil
+			}
+
+			gunConfig := &gun.Config{
+				ServiceName:  option.GrpcOpts.GrpcServiceName,
+				UserAgent:    option.GrpcOpts.GrpcUserAgent,
+				Host:         option.ServerName,
+				PingInterval: option.GrpcOpts.PingInterval,
+			}
+			if option.ServerName == "" {
+				gunConfig.Host = v.addr
+			}
+			var tlsConfig *vmess.TLSConfig
+			if option.TLS {
+				tlsConfig = &vmess.TLSConfig{
+					Host:              option.ServerName,
+					SkipCertVerify:    option.SkipCertVerify,
+					FingerPrint:       option.Fingerprint,
+					Certificate:       option.Certificate,
+					PrivateKey:        option.PrivateKey,
+					ClientFingerprint: option.ClientFingerprint,
+					NextProtos:        []string{"h2"},
+					ECH:               v.echConfig,
+					Reality:           v.realityConfig,
+				}
+				if option.ServerName == "" {
+					host, _, _ := net.SplitHostPort(v.addr)
+					tlsConfig.Host = host
+				}
+			}
+
+			v.gunClient = gun.NewClient(
+				func() *gun.Transport {
+					return gun.NewTransport(dialFn, tlsConfig, gunConfig)
+				},
+				option.GrpcOpts.MaxConnections,
+				option.GrpcOpts.MinStreams,
+				option.GrpcOpts.MaxStreams,
+			)
+		case "xhttp":
+			requestHost := v.option.XHTTPOpts.Host
+			if requestHost == "" {
+				if v.option.ServerName != "" {
+					requestHost = v.option.ServerName
+				} else {
+					requestHost = v.option.Server
+				}
+			}
+
+			var hKeepAlivePeriod time.Duration
+
+			var reuseCfg *xhttp.ReuseConfig
+			if option.XHTTPOpts.ReuseSettings != nil {
+				reuseCfg = &xhttp.ReuseConfig{
+					MaxConcurrency:   option.XHTTPOpts.ReuseSettings.MaxConcurrency,
+					MaxConnections:   option.XHTTPOpts.ReuseSettings.MaxConnections,
+					CMaxReuseTimes:   option.XHTTPOpts.ReuseSettings.CMaxReuseTimes,
+					HMaxRequestTimes: option.XHTTPOpts.ReuseSettings.HMaxRequestTimes,
+					HMaxReusableSecs: option.XHTTPOpts.ReuseSettings.HMaxReusableSecs,
+				}
+				hKeepAlivePeriod = time.Duration(option.XHTTPOpts.ReuseSettings.HKeepAlivePeriod) * time.Second
+			}
+
+			cfg := &xhttp.Config{
+				Host:                 requestHost,
+				Path:                 v.option.XHTTPOpts.Path,
+				Mode:                 v.option.XHTTPOpts.Mode,
+				Headers:              prepareX365XHTTPHeaders(v.option.XHTTPOpts.Headers),
+				NoGRPCHeader:         v.option.XHTTPOpts.NoGRPCHeader,
+				XPaddingBytes:        v.option.XHTTPOpts.XPaddingBytes,
+				XPaddingObfsMode:     v.option.XHTTPOpts.XPaddingObfsMode,
+				XPaddingKey:          v.option.XHTTPOpts.XPaddingKey,
+				XPaddingHeader:       v.option.XHTTPOpts.XPaddingHeader,
+				XPaddingPlacement:    v.option.XHTTPOpts.XPaddingPlacement,
+				XPaddingMethod:       v.option.XHTTPOpts.XPaddingMethod,
+				UplinkHTTPMethod:     v.option.XHTTPOpts.UplinkHTTPMethod,
+				SessionPlacement:     v.option.XHTTPOpts.SessionPlacement,
+				SessionKey:           v.option.XHTTPOpts.SessionKey,
+				SeqPlacement:         v.option.XHTTPOpts.SeqPlacement,
+				SeqKey:               v.option.XHTTPOpts.SeqKey,
+				UplinkDataPlacement:  v.option.XHTTPOpts.UplinkDataPlacement,
+				UplinkDataKey:        v.option.XHTTPOpts.UplinkDataKey,
+				UplinkChunkSize:      v.option.XHTTPOpts.UplinkChunkSize,
+				ScMaxEachPostBytes:   v.option.XHTTPOpts.ScMaxEachPostBytes,
+				ScMinPostsIntervalMs: v.option.XHTTPOpts.ScMinPostsIntervalMs,
+				ReuseConfig:          reuseCfg,
+			}
+
+			makeTransport := func() mihomoHttp.RoundTripper {
+				return xhttp.NewTransport(
+					func(ctx context.Context) (net.Conn, error) {
+						return v.dialer.DialContext(ctx, "tcp", v.addr)
+					},
+					func(ctx context.Context, raw net.Conn, isH2 bool) (net.Conn, error) {
+						return v.streamTLSConn(ctx, raw, isH2)
+					},
+					func(ctx context.Context, cfg *quic.Config) (*quic.Conn, error) {
+						host, _, _ := net.SplitHostPort(v.addr)
+						tlsOpts := &vmess.TLSConfig{
+							Host:              host,
+							SkipCertVerify:    v.option.SkipCertVerify,
+							FingerPrint:       v.option.Fingerprint,
+							Certificate:       v.option.Certificate,
+							PrivateKey:        v.option.PrivateKey,
+							ClientFingerprint: v.option.ClientFingerprint,
+							ECH:               v.echConfig,
+							Reality:           v.realityConfig,
+							NextProtos:        []string{"h3"},
+						}
+						if v.option.ServerName != "" {
+							tlsOpts.Host = v.option.ServerName
+						}
+						if !v.option.TLS {
+							return nil, errors.New("xhttp HTTP/3 requires TLS")
+						}
+						if v.realityConfig != nil {
+							return nil, errors.New("xhttp HTTP/3 does not support reality")
+						}
+						tlsConfig, err := tlsOpts.ToStdConfig()
+						if err != nil {
+							return nil, err
+						}
+
+						err = v.echConfig.ClientHandle(ctx, tlsConfig)
+						if err != nil {
+							return nil, err
+						}
+						_, quicConn, err := tuicCommon.DialQuic(ctx, v.addr, v.DialOptions(), v.dialer, tlsConfig, cfg, tuicCommon.DialQuicOption{Early: true})
+						if err != nil {
+							return nil, err
+						}
+						return quicConn, nil
+					},
+					v.option.ALPN,
+					hKeepAlivePeriod,
+				)
+			}
+
+			v.xhttpClient, v.initErr = xhttp.NewClient(cfg, makeTransport, nil, v.realityConfig != nil)
+		}
+	})
+	return v.initErr
 }
