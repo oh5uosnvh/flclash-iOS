@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/metacubex/mihomo/component/dialer"
@@ -395,7 +396,7 @@ func neReport(message *C.char) {
 	sendMessage(Message{
 		Type: LogMessage,
 		Data: StampedLogEvent{
-			LogLevel: log.LevelInfo,
+			LogLevel: log.INFO,
 			Payload:  "[NE] " + msg,
 			Time:     time.Now().UnixMilli(),
 		},
