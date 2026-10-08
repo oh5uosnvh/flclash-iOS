@@ -346,8 +346,8 @@ extension PacketTunnelProvider {
       queue: DispatchQueue.global(qos: .userInitiated)
     )
     pressure.setEventHandler { [weak self] in
-      guard let self, let source = self.memoryPressureSource else { return }
-      let data = source.data
+      guard let self else { return }
+      let data = memoryPressureSource?.data ?? []
       if data.contains(.critical) {
         self.reclaimMemory(level: "critical")
       } else if data.contains(.warning) {
