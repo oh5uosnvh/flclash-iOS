@@ -91,6 +91,17 @@ func handleInitClash(params *InitParams) bool {
 	if features.IOS && !features.WithLowMemory {
 		constant.SetSaveMatcherCache(true)
 	}
+	if features.IOS && features.WithLowMemory {
+		// The NE jetsam budget is ~50MB of phys_footprint while a full
+		// 121-node profile load peaks well past 100MB of Go heap on
+		// unrestricted runtimes (the Android memory card shows the same
+		// shape). Cap the Go heap so the collector starts leaning on the
+		// profile long before the extension crosses the line. Soft limit:
+		// the GC simply runs harder as the heap approaches it.
+		const neGoHeapSoftLimitBytes = 32 << 20
+		debug.SetMemoryLimit(neGoHeapSoftLimitBytes)
+		log.Infoln("[NE] Go memory soft limit set to %dMB (iOS lowmem)", neGoHeapSoftLimitBytes>>20)
+	}
 	isInit.Store(true)
 	return true
 }
