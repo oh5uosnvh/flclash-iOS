@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Theme-color adaptation of https://github.com/EasyTier/EasyTier/blob/main/easytier-gui/src-tauri/icons/icon.png -->
+  <g fill="#000" fill-opacity=".4">
+    <circle cx="32" cy="6" r="4.5"/>
+    <circle cx="10" cy="50" r="4.5"/>
+    <circle cx="54" cy="50" r="4.5"/>
+    <path fill-rule="evenodd" d="M45 34a13 13 0 1 0-26 0 13 13 0 0 0 26 0ZM41.5 34a9.5 9.5 0 1 0-19 0 9.5 9.5 0 0 0 19 0Z"/>
+    <path d="M26 34q6-7 12 0-6 7-12 0Z"/>
+  </g>
+  <g fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M27 7C8 10-3 29 7 46M37 7c19 3 30 22 20 39M18 59q14 7 28 0"/>
+    <circle cx="32" cy="6" r="4.5"/>
+    <path d="M24 17a8 8 0 0 1 16 0Z"/>
+    <circle cx="10" cy="50" r="4.5"/>
+    <path d="M2 62a8 8 0 0 1 16 0Z"/>
+    <circle cx="54" cy="50" r="4.5"/>
+    <path d="M46 62a8 8 0 0 1 16 0Z"/>
+    <circle cx="32" cy="34" r="13"/>
+    <circle cx="32" cy="34" r="9.5"/>
+    <path d="m40 43 8 8m-5-11 8 8M26 34q6-7 12 0-6 7-12 0Z"/>
+  </g>
+  <circle cx="32" cy="34" r="1.75" fill="#000"/>
+</svg>

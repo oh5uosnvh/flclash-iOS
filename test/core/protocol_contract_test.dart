@@ -1,0 +1,564 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:fl_clash/core/event.dart';
+import 'package:fl_clash/core/desktop/model.dart';
+import 'package:fl_clash/core/interface.dart';
+import 'package:fl_clash/core/method.dart';
+import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/models/models.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+class _RecordingCoreHandler extends CoreHandlerInterface {
+  final Map<CoreMethod, Object?> calls = {};
+
+  @override
+  Future<CoreLifecycleResult> start() async => const CoreLifecycleResult(
+    revision: 1,
+    outcome: CoreLifecycleOutcome.applied,
+  );
+
+  @override
+  Future<CoreLifecycleResult> restart() => start();
+
+  @override
+  Future<CoreLifecycleResult> stop() => start();
+
+  @override
+  Future<CoreLifecycleResult> close() => start();
+
+  @override
+  Future<T?> invokeMethod<T>({
+    required CoreMethod method,
+    Object? arguments,
+    Duration? timeout,
+  }) async {
+    calls[method] = arguments;
+    final result = switch (method) {
+      CoreMethod.initClash => true as T,
+      CoreMethod.getTraffic ||
+      CoreMethod.getTotalTraffic => {'up': 12, 'down': 34},
+      CoreMethod.getNodeTraffic => [
+        {'name': 'node', 'provider': 'provider', 'up': 12, 'down': 34},
+        {'name': 'node', 'provider': 'other', 'up': 56, 'down': 78},
+      ],
+      CoreMethod.asyncTestDelay => {
+        'name': 'DIRECT',
+        'url': 'https://example.com',
+        'value': 42,
+      },
+      CoreMethod.getConnections => {
+        'connections': [
+          {
+            'id': 'connection-1',
+            'metadata': {'network': 'tcp'},
+            'upload': 0,
+            'download': 0,
+            'start': '2024-01-01',
+            'chains': ['DIRECT'],
+            'rule': 'DIRECT',
+            'rulePayload': '',
+          },
+        ],
+      },
+      CoreMethod.getExternalProviders => [
+        {
+          'name': 'provider-1',
+          'type': 'Proxy',
+          'count': 1,
+          'vehicle-type': 'HTTP',
+          'update-at': '2024-01-01T00:00:00.000Z',
+        },
+      ],
+      CoreMethod.getExternalProvider => {
+        'name': 'provider-1',
+        'type': 'Proxy',
+        'count': 1,
+        'vehicle-type': 'HTTP',
+        'update-at': '2024-01-01T00:00:00.000Z',
+      },
+      CoreMethod.getOverlayNetworkStatus => [
+        {
+          'name': 'tailnet',
+          'kind': 'tailscale',
+          'state': 'connected',
+          'raw-state': 'Running',
+          'network-name': 'example.com',
+          'details': {
+            'magic-dns-suffix': 'example.com',
+            'auth-key-configured': true,
+            'health': <String>[],
+            'nodes': [
+              {
+                'id': 'node-1',
+                'public-key': 'nodekey:test',
+                'hostname': 'device',
+                'dns-name': 'device.example.com.',
+                'os': 'windows',
+                'ips': ['100.64.0.1'],
+                'endpoints': ['192.0.2.1:41641'],
+                'online': true,
+                'active': true,
+                'self': true,
+                'exit-node': false,
+                'exit-node-option': false,
+                'expired': false,
+              },
+            ],
+          },
+        },
+        {
+          'name': 'zerotier',
+          'kind': 'zerotier',
+          'state': 'connected',
+          'raw-state': 'ok',
+          'network-name': 'example',
+          'details': {
+            'network-id': '8056c2e21c000001',
+            'node': 'abcdef1234',
+            'online': true,
+            'addresses': ['10.0.0.2/24'],
+            'routes': ['10.0.0.0/24'],
+            'dns': ['10.0.0.1:53'],
+            'mtu': 2800,
+            'peers': [
+              {
+                'address': '1234567890',
+                'role': 'leaf',
+                'version': '1.14.2',
+                'direct': true,
+                'endpoints': ['192.0.2.1:9993'],
+                'latency-ms': 12,
+              },
+            ],
+          },
+        },
+      ],
+      CoreMethod.activateOverlayNetwork => {
+        'name': 'tailnet',
+        'kind': 'tailscale',
+        'state': 'connected',
+        'raw-state': 'Running',
+        'network-name': 'example.com',
+      },
+      CoreMethod.pingTailscaleNode => {'latency-ms': 23},
+      CoreMethod.logoutTailscale => true,
+      CoreMethod.getProfileConfig => {
+        'mode': 'rule',
+        'rule': ['MATCH,DIRECT'],
+      },
+      CoreMethod.generateAgeKeyPair => {
+        'secret-key': 'AGE-SECRET-KEY-1',
+        'public-key': 'age1public',
+      },
+      CoreMethod.convertAgeSecretKeyToPublicKey => 'age1public',
+      CoreMethod.decryptAgeConfig => 'mode: rule',
+      CoreMethod.getMemory => {
+        'sys': 4096,
+        'heapObjects': 1024,
+        'heapUnused': 256,
+        'heapIdle': 128,
+        'stacks': 256,
+        'metadata': 128,
+        'gc': 128,
+        'other': 128,
+        'heapReleased': 2048,
+      },
+      CoreMethod.getGoroutineCount => 42,
+      CoreMethod.queryRule => {
+        'target': 'example.com',
+        'port': 443,
+        'network': 'tcp',
+        'mode': 'rule',
+        'rule': 'DomainSuffix',
+        'rulePayload': 'example.com',
+        'proxy': 'DIRECT',
+        'ip': '',
+        'delay': 0,
+      },
+      CoreMethod.queryDns => {
+        'domain': 'example.com',
+        'type': 'AAAA',
+        'initiator': 'manual',
+        'upstream': 'udp://1.1.1.1:53',
+        'answers': ['2606:2800:220:1::248'],
+        'rcode': 'NOERROR',
+        'delay': 8,
+        'time': '2026-10-06T00:00:00.000Z',
+      },
+      _ => '',
+    };
+    return result as T;
+  }
+}
+
+class _FailingConfigCoreHandler extends _RecordingCoreHandler {
+  @override
+  Future<T?> invokeMethod<T>({
+    required CoreMethod method,
+    Object? arguments,
+    Duration? timeout,
+  }) async {
+    if (method == CoreMethod.getProfileConfig) {
+      throw const CoreMethodException(
+        code: 'core_error',
+        message: 'config not found',
+        details: {'path': '/missing.yaml'},
+      );
+    }
+    return super.invokeMethod(
+      method: method,
+      arguments: arguments,
+      timeout: timeout,
+    );
+  }
+}
+
+class _EmptyConfigCoreHandler extends _RecordingCoreHandler {
+  @override
+  Future<T?> invokeMethod<T>({
+    required CoreMethod method,
+    Object? arguments,
+    Duration? timeout,
+  }) async {
+    if (method == CoreMethod.getProfileConfig) {
+      return null;
+    }
+    return super.invokeMethod(
+      method: method,
+      arguments: arguments,
+      timeout: timeout,
+    );
+  }
+}
+
+void main() {
+  test('configuration fields match the shared Go contract', () async {
+    final fixture =
+        jsonDecode(await File('test/fixtures/config_patch.json').readAsString())
+            as Map<String, dynamic>;
+    final params = UpdateParams.fromJson(fixture);
+    final encoded = jsonDecode(jsonEncode(params));
+
+    expect(encoded, fixture);
+  });
+
+  test('method call keeps structured arguments', () async {
+    final fixture =
+        json.decode(
+              await File('test/fixtures/core_protocol.json').readAsString(),
+            )
+            as Map<String, dynamic>;
+    final call = CoreMethodCall.fromJson(
+      Map<String, Object?>.from(fixture['methodCall'] as Map),
+    );
+
+    expect(call.method, CoreMethod.updateConfig);
+    expect(call.arguments, isA<Map<String, dynamic>>());
+    expect((call.arguments as Map)['mixed-port'], 7890);
+    expect(call.toJson(), containsPair('arguments', call.arguments));
+    expect(call.toJson(), isNot(contains('data')));
+  });
+
+  test('core interface sends structured request parameters', () async {
+    final handler = _RecordingCoreHandler();
+
+    await handler.init(const InitParams(homeDir: '/tmp/flclash', version: 35));
+    await handler.setupConfig(
+      const SetupParams(selectedMap: {'GLOBAL': 'DIRECT'}, testUrl: 'test'),
+    );
+    await handler.changeProxy(
+      const ChangeProxyParams(groupName: 'GLOBAL', proxyName: 'DIRECT'),
+      closeConnections: true,
+    );
+    await handler.sideLoadExternalProvider(providerName: 'provider', data: 'x');
+    await handler.asyncTestDelay('https://example.com', 'DIRECT');
+    await handler.clearEffect(42);
+    await handler.validateConfig('mode: rule');
+    await handler.decryptAgeConfig('encrypted', 'AGE-SECRET-KEY-1');
+    await handler.convertAgeSecretKeyToPublicKey('AGE-SECRET-KEY-1');
+
+    for (final method in [
+      CoreMethod.initClash,
+      CoreMethod.setupConfig,
+      CoreMethod.changeProxy,
+      CoreMethod.sideLoadExternalProvider,
+      CoreMethod.asyncTestDelay,
+    ]) {
+      expect(handler.calls[method], isA<Map>());
+    }
+    expect(handler.calls[CoreMethod.clearEffect], 42);
+    expect(handler.calls[CoreMethod.validateConfig], 'mode: rule');
+    expect(handler.calls[CoreMethod.changeProxy], {
+      'group-name': 'GLOBAL',
+      'proxy-name': 'DIRECT',
+      'close-connections': true,
+    });
+    expect(handler.calls[CoreMethod.decryptAgeConfig], {
+      'data': 'encrypted',
+      'age-secret-key': 'AGE-SECRET-KEY-1',
+    });
+    expect(
+      handler.calls[CoreMethod.convertAgeSecretKeyToPublicKey],
+      'AGE-SECRET-KEY-1',
+    );
+  });
+
+  test('event contract accepts batches and legacy single events', () async {
+    final fixture =
+        json.decode(
+              await File('test/fixtures/core_protocol.json').readAsString(),
+            )
+            as Map<String, dynamic>;
+    final call = CoreMethodCall.fromJson(
+      Map<String, Object?>.from(fixture['eventCall'] as Map),
+    );
+
+    final events = coreEventsFromData(call.arguments);
+    expect(events, hasLength(2));
+    expect(events.first.type, CoreEventType.loaded);
+    expect(events.last.type, CoreEventType.delay);
+
+    final legacy = coreEventsFromData({'type': 'loaded', 'data': 'provider-b'});
+    expect(legacy.single.data, 'provider-b');
+  });
+
+  test('event contract skips malformed entries without dropping the batch', () {
+    final events = coreEventsFromData([
+      {'type': 'loaded', 'data': 'provider-a'},
+      {'type': 'invalid-event', 'data': null},
+      {'type': 'loaded', 'data': 'provider-b'},
+    ]);
+
+    expect(events.map((event) => event.data), ['provider-a', 'provider-b']);
+  });
+
+  test('core interface converts structured method results', () async {
+    final handler = _RecordingCoreHandler();
+
+    expect(await handler.getTraffic(false), const Traffic(up: 12, down: 34));
+    expect(
+      await handler.getTotalTraffic(false),
+      const Traffic(up: 12, down: 34),
+    );
+    expect(
+      await handler.asyncTestDelay('https://example.com', 'DIRECT'),
+      const Delay(name: 'DIRECT', url: 'https://example.com', value: 42),
+    );
+    expect(await handler.getNodeTraffic(), const [
+      NodeTraffic(name: 'node', provider: 'provider', up: 12, down: 34),
+      NodeTraffic(name: 'node', provider: 'other', up: 56, down: 78),
+    ]);
+    expect(handler.calls, containsPair(CoreMethod.getNodeTraffic, null));
+    expect((await handler.getConnections()).single.id, 'connection-1');
+    expect((await handler.getExternalProviders()).single.name, 'provider-1');
+    expect(
+      (await handler.getExternalProvider('provider-1'))?.name,
+      'provider-1',
+    );
+    final overlayStatuses = await handler.getOverlayNetworkStatus(
+      const GetOverlayNetworkStatusParams(
+        targets: [
+          OverlayNetworkTarget(
+            name: 'tailnet',
+            kind: OverlayNetworkKind.tailscale,
+            level: OverlayNetworkDetailLevel.details,
+          ),
+          OverlayNetworkTarget(
+            name: 'zerotier',
+            kind: OverlayNetworkKind.zerotier,
+            level: OverlayNetworkDetailLevel.details,
+          ),
+        ],
+      ),
+    );
+    expect(overlayStatuses.first.state, OverlayNetworkState.connected);
+    expect(
+      overlayStatuses.first.tailscaleDetails?.magicDnsSuffix,
+      'example.com',
+    );
+    expect(overlayStatuses.first.tailscaleDetails?.nodes.single.ips, [
+      '100.64.0.1',
+    ]);
+    expect(
+      overlayStatuses.first.tailscaleDetails?.nodes.single.hostName,
+      'device',
+    );
+    expect(
+      overlayStatuses.first.tailscaleDetails?.nodes.single.dnsName,
+      'device.example.com.',
+    );
+    expect(
+      overlayStatuses.first.tailscaleDetails?.nodes.single.publicKey,
+      'nodekey:test',
+    );
+    expect(overlayStatuses.first.tailscaleDetails?.nodes.single.endpoints, [
+      '192.0.2.1:41641',
+    ]);
+    expect(overlayStatuses.last.zeroTierDetails?.peers.single.latencyMs, 12);
+    expect(handler.calls[CoreMethod.getOverlayNetworkStatus], {
+      'targets': [
+        {'name': 'tailnet', 'kind': 'tailscale', 'level': 'details'},
+        {'name': 'zerotier', 'kind': 'zerotier', 'level': 'details'},
+      ],
+    });
+    final activated = await handler.activateOverlayNetwork(
+      'tailnet',
+      OverlayNetworkKind.tailscale,
+    );
+    expect(activated.state, OverlayNetworkState.connected);
+    expect(handler.calls[CoreMethod.activateOverlayNetwork], {
+      'name': 'tailnet',
+      'kind': 'tailscale',
+    });
+    expect(
+      (await handler.pingTailscaleNode('tailnet', '100.64.0.1')).latencyMs,
+      23,
+    );
+    expect(handler.calls[CoreMethod.pingTailscaleNode], {
+      'name': 'tailnet',
+      'ip': '100.64.0.1',
+    });
+    expect(await handler.logoutTailscale('tailnet'), isTrue);
+    expect(handler.calls[CoreMethod.logoutTailscale], {'name': 'tailnet'});
+    expect(await handler.getProfileConfig(42), {
+      'mode': 'rule',
+      'rule': ['MATCH,DIRECT'],
+    });
+    expect(await handler.generateAgeKeyPair(), {
+      'secret-key': 'AGE-SECRET-KEY-1',
+      'public-key': 'age1public',
+    });
+    expect(
+      await handler.convertAgeSecretKeyToPublicKey('AGE-SECRET-KEY-1'),
+      'age1public',
+    );
+    expect(
+      await handler.decryptAgeConfig('encrypted', 'AGE-SECRET-KEY-1'),
+      'mode: rule',
+    );
+    final memory = await handler.getMemory();
+    expect(memory.total, 2048);
+    expect(memory.sys, 4096);
+    expect(memory.heapObjects, 1024);
+    expect(memory.heapUnused, 256);
+    expect(memory.heapIdle, 128);
+    expect(memory.stacks, 256);
+    expect(memory.metadata, 128);
+    expect(memory.gc, 128);
+    expect(memory.other, 128);
+    expect(memory.heapReleased, 2048);
+    expect(await handler.getGoroutineCount(), 42);
+    final dnsQuery = await handler.queryDns('example.com', 'AAAA');
+    expect(handler.calls[CoreMethod.queryDns], {
+      'domain': 'example.com',
+      'type': 'AAAA',
+    });
+    expect(dnsQuery.initiator, DnsQueryInitiator.manual);
+    expect(dnsQuery.answers, ['2606:2800:220:1::248']);
+    final ruleQuery = await handler.queryRule(
+      const RuleQueryParams(target: 'example.com'),
+    );
+    expect(handler.calls[CoreMethod.queryRule], {
+      'target': 'example.com',
+      'port': 443,
+      'network': 'tcp',
+    });
+    expect(ruleQuery.rule, 'DomainSuffix');
+    expect(ruleQuery.proxy, 'DIRECT');
+    expect(ruleQuery.mode, Mode.rule);
+    await handler.queryRule(
+      const RuleQueryParams(
+        target: 'example.com',
+        sourceIP: '192.0.2.2',
+        sourcePort: 12345,
+        destinationIP: '192.0.2.1',
+        process: 'browser',
+        processPath: '/usr/bin/browser',
+        uid: 123,
+        inboundName: 'mixed-in',
+        inboundUser: 'alice',
+        sniffHost: 'sniff.example',
+        dscp: 63,
+      ),
+    );
+    expect(handler.calls[CoreMethod.queryRule], {
+      'target': 'example.com',
+      'port': 443,
+      'network': 'tcp',
+      'sourceIP': '192.0.2.2',
+      'sourcePort': 12345,
+      'destinationIP': '192.0.2.1',
+      'process': 'browser',
+      'processPath': '/usr/bin/browser',
+      'uid': 123,
+      'inboundName': 'mixed-in',
+      'inboundUser': 'alice',
+      'sniffHost': 'sniff.example',
+      'dscp': 63,
+    });
+  });
+
+  test('getProfileConfig preserves structured core errors', () async {
+    final handler = _FailingConfigCoreHandler();
+
+    await expectLater(
+      handler.getProfileConfig(42),
+      throwsA(
+        isA<CoreMethodException>()
+            .having((error) => error.code, 'code', 'core_error')
+            .having((error) => error.details, 'details', {
+              'path': '/missing.yaml',
+            }),
+      ),
+    );
+  });
+
+  test('getProfileConfig rejects empty transport results', () async {
+    final handler = _EmptyConfigCoreHandler();
+
+    await expectLater(
+      handler.getProfileConfig(42),
+      throwsA(
+        isA<CoreMethodException>().having(
+          (error) => error.code,
+          'code',
+          'empty_result',
+        ),
+      ),
+    );
+  });
+
+  test('method response separates result and structured errors', () async {
+    final fixture =
+        json.decode(
+              await File('test/fixtures/core_protocol.json').readAsString(),
+            )
+            as Map<String, dynamic>;
+    final success = CoreMethodResponse.fromJson(
+      Map<String, Object?>.from(fixture['successResponse'] as Map),
+    );
+    final structured = CoreMethodResponse.fromJson(
+      Map<String, Object?>.from(fixture['structuredResponse'] as Map),
+    );
+    final failure = CoreMethodResponse.fromJson(
+      Map<String, Object?>.from(fixture['errorResponse'] as Map),
+    );
+
+    expect(success.unwrap<String>(), '');
+    expect(success.toJson(), containsPair('result', ''));
+    expect(structured.result, isA<Map>());
+    expect(structured.result, isNot(isA<String>()));
+    expect(structured.unwrap<Map<String, dynamic>>()?['up'], 12);
+    expect(
+      () => failure.unwrap<Object?>(),
+      throwsA(
+        isA<CoreMethodException>()
+            .having((error) => error.code, 'code', 'core_error')
+            .having((error) => error.message, 'message', 'config not found'),
+      ),
+    );
+    expect(failure.toJson(), contains('error'));
+    expect(failure.toJson(), isNot(contains('code')));
+  });
+}

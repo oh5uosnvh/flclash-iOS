@@ -1,0 +1,303 @@
+import 'package:fl_clash/l10n/l10n.dart';
+import 'package:fl_clash/manager/locale_manager.dart';
+import 'package:fl_clash/manager/tray_manager.dart';
+import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/providers/providers.dart';
+import 'package:fl_clash/state.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:intl/intl.dart';
+import 'package:tray/tray.dart';
+
+import '../helpers/test_profiles.dart';
+
+const _trayChannel = MethodChannel('tray');
+const _windowChannel = MethodChannel('window_manager');
+const _codec = StandardMethodCodec();
+
+class _RecordingSystemAction extends SystemAction {
+  static int updateTrayCount = 0;
+  static final List<String> updateTrayLocales = <String>[];
+
+  @override
+  Future<void> updateTray() async {
+    updateTrayCount++;
+    updateTrayLocales.add(Intl.getCurrentLocale());
+  }
+}
+
+class _FailingSystemAction extends SystemAction {
+  @override
+  Future<void> updateTray() async {
+    throw StateError('tray boom');
+  }
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  late ProviderContainer container;
+  late List<String> windowCalls;
+  late List<MethodCall> windowMethodCalls;
+
+  setUpAll(() async {
+    await AppLocalizations.load(const Locale('en'));
+  });
+
+  setUp(() {
+    _RecordingSystemAction.updateTrayCount = 0;
+    _RecordingSystemAction.updateTrayLocales.clear();
+    windowCalls = <String>[];
+    windowMethodCalls = <MethodCall>[];
+    Tray.instance.resetForTesting();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_trayChannel, (call) async => true);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          windowCalls.add(call.method);
+          windowMethodCalls.add(call);
+          return call.method == 'isMinimized' ? false : null;
+        });
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      ..setMockMethodCallHandler(_trayChannel, null)
+      ..setMockMethodCallHandler(_windowChannel, null);
+    container.dispose();
+  });
+
+  Future<void> emitTrayEvent(String event, [Object? arguments]) async {
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+          _trayChannel.name,
+          _codec.encodeMethodCall(MethodCall(event, arguments)),
+          null,
+        );
+  }
+
+  Future<void> pumpTrayManager(
+    WidgetTester tester, {
+    SystemAction Function()? systemAction,
+    bool? isMacOS,
+    Future<void> Function()? openMenu,
+  }) async {
+    container = ProviderContainer(
+      overrides: [
+        profilesProvider.overrideWith(TestProfiles.new),
+        systemActionProvider.overrideWith(
+          systemAction ?? _RecordingSystemAction.new,
+        ),
+      ],
+    );
+    globalState.container = container;
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: TrayManager(
+            isMacOS: isMacOS,
+            openMenu: openMenu,
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+  }
+
+  Future<void> pumpLocalizedTrayManager(
+    WidgetTester tester,
+    Locale locale,
+  ) async {
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          locale: locale,
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            ...GlobalMaterialLocalizations.delegates,
+          ],
+          supportedLocales: AppLocalizations.delegate.supportedLocales,
+          home: const LocaleManager(
+            child: TrayManager(child: SizedBox.shrink()),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('renders its child untouched', (tester) async {
+    await pumpTrayManager(tester);
+
+    expect(find.byType(SizedBox), findsOneWidget);
+  });
+
+  testWidgets('activating the icon brings the window back', (tester) async {
+    await pumpTrayManager(tester, isMacOS: false);
+    windowCalls.clear();
+
+    await emitTrayEvent('onIconActivated');
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(windowCalls, containsAll(<String>['show', 'focus']));
+  });
+
+  testWidgets('icon activation carries focus credentials to the window', (
+    tester,
+  ) async {
+    await pumpTrayManager(tester, isMacOS: false);
+    windowMethodCalls.clear();
+
+    await emitTrayEvent('onIconActivated', {
+      'activationTimestamp': 1234,
+      'activationToken': 'wayland-token',
+    });
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
+
+    final show = windowMethodCalls.singleWhere((call) => call.method == 'show');
+    expect(show.arguments, containsPair('activationTimestamp', 1234));
+    expect(show.arguments, containsPair('activationToken', 'wayland-token'));
+    expect(windowCalls, contains('focus'));
+  });
+
+  testWidgets('activating the icon opens the menu on macOS', (tester) async {
+    var openMenuCount = 0;
+    await pumpTrayManager(
+      tester,
+      isMacOS: true,
+      openMenu: () async {
+        openMenuCount++;
+      },
+    );
+    windowCalls.clear();
+
+    await emitTrayEvent('onIconActivated');
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(openMenuCount, 1);
+    expect(windowCalls, isEmpty);
+  });
+
+  testWidgets('a menu request is forwarded to the tray', (tester) async {
+    await pumpTrayManager(tester);
+
+    await emitTrayEvent('onMenuRequested');
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a tray state change pushes the tray forward', (tester) async {
+    await pumpTrayManager(tester);
+    _RecordingSystemAction.updateTrayCount = 0;
+
+    container
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith(mixedPort: state.mixedPort + 1));
+    await tester.pumpAndSettle();
+
+    expect(_RecordingSystemAction.updateTrayCount, 1);
+  });
+
+  testWidgets('an unchanged tray state does not touch the tray', (
+    tester,
+  ) async {
+    await pumpTrayManager(tester);
+    _RecordingSystemAction.updateTrayCount = 0;
+
+    container
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith(mixedPort: state.mixedPort));
+    await tester.pumpAndSettle();
+
+    expect(_RecordingSystemAction.updateTrayCount, 0);
+  });
+
+  testWidgets('a hotkey change pushes the tray forward', (tester) async {
+    await pumpTrayManager(tester);
+    _RecordingSystemAction.updateTrayCount = 0;
+
+    container.read(hotKeyActionsProvider.notifier).value = [
+      HotKeyAction(
+        action: HotAction.start,
+        key: PhysicalKeyboardKey.keyS.usbHidUsage,
+      ),
+    ];
+    await tester.pumpAndSettle();
+
+    expect(_RecordingSystemAction.updateTrayCount, 1);
+  });
+
+  testWidgets('a failed tray update is reported instead of thrown', (
+    tester,
+  ) async {
+    await pumpTrayManager(tester, systemAction: _FailingSystemAction.new);
+
+    container
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith(mixedPort: state.mixedPort + 1));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a language switch pushes the tray in the new language', (
+    tester,
+  ) async {
+    addTearDown(() => AppLocalizations.load(const Locale('en')));
+    container = ProviderContainer(
+      overrides: [
+        profilesProvider.overrideWith(TestProfiles.new),
+        systemActionProvider.overrideWith(_RecordingSystemAction.new),
+      ],
+    );
+    globalState.container = container;
+    await pumpLocalizedTrayManager(tester, const Locale('en'));
+    _RecordingSystemAction.updateTrayCount = 0;
+    _RecordingSystemAction.updateTrayLocales.clear();
+
+    await pumpLocalizedTrayManager(tester, const Locale('zh', 'CN'));
+
+    expect(_RecordingSystemAction.updateTrayCount, 1);
+    expect(_RecordingSystemAction.updateTrayLocales, <String>['zh_CN']);
+  });
+
+  testWidgets('the locale a language switch starts from does not push twice', (
+    tester,
+  ) async {
+    container = ProviderContainer(
+      overrides: [
+        profilesProvider.overrideWith(TestProfiles.new),
+        systemActionProvider.overrideWith(_RecordingSystemAction.new),
+      ],
+    );
+    globalState.container = container;
+    await pumpLocalizedTrayManager(tester, const Locale('en'));
+    _RecordingSystemAction.updateTrayCount = 0;
+
+    await pumpLocalizedTrayManager(tester, const Locale('en'));
+
+    expect(_RecordingSystemAction.updateTrayCount, 0);
+  });
+
+  testWidgets('tray events stop being handled after disposal', (tester) async {
+    await pumpTrayManager(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    windowCalls.clear();
+
+    await emitTrayEvent('onIconActivated');
+    await tester.pumpAndSettle();
+
+    expect(windowCalls, isEmpty);
+  });
+}

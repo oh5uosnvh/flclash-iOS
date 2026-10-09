@@ -1,0 +1,291 @@
+part of '../state.dart';
+
+final vpnOptionsProvider = Provider<VpnOptions?>((ref) {
+  return ref.watch(sharedStateProvider.select((state) => state.vpnOptions));
+});
+
+@riverpod
+({
+  PatchClashConfig config,
+  bool overrideDns,
+  bool overrideNtp,
+  bool appendSystemDns,
+})
+profileReloadState(Ref ref) {
+  final config = ref.watch(patchClashConfigProvider);
+  return (
+    // Fields supported by updateParams use the existing hot-update path.
+    config: config.copyWith(
+      tun: defaultClashConfig.tun,
+      allowLan: defaultClashConfig.allowLan,
+      findProcessMode: defaultClashConfig.findProcessMode,
+      mode: defaultClashConfig.mode,
+      logLevel: defaultClashConfig.logLevel,
+      ipv6: defaultClashConfig.ipv6,
+      tcpConcurrent: defaultClashConfig.tcpConcurrent,
+      externalController: defaultClashConfig.externalController,
+      secret: defaultClashConfig.secret,
+      unifiedDelay: defaultClashConfig.unifiedDelay,
+      mixedPort: defaultClashConfig.mixedPort,
+      geoAutoUpdate: defaultClashConfig.geoAutoUpdate,
+      geoUpdateInterval: defaultClashConfig.geoUpdateInterval,
+    ),
+    overrideDns: ref.watch(overrideDnsProvider),
+    overrideNtp: ref.watch(overrideNtpProvider),
+    appendSystemDns: ref.watch(
+      networkSettingProvider.select((state) => state.appendSystemDns),
+    ),
+  );
+}
+
+@riverpod
+UpdateParams updateParams(Ref ref) {
+  final routeMode = ref.watch(
+    networkSettingProvider.select((state) => state.routeMode),
+  );
+  final authentication = ref.watch(
+    networkSettingProvider.select((state) => state.authentication),
+  );
+  return ref.watch(
+    patchClashConfigProvider.select(
+      (state) => UpdateParams(
+        tun: state.tun.getRealTun(routeMode),
+        authentication: authentication.credentials,
+        allowLan: state.allowLan,
+        findProcessMode: state.findProcessMode,
+        mode: state.mode,
+        logLevel: state.logLevel,
+        ipv6: state.ipv6,
+        tcpConcurrent: state.tcpConcurrent,
+        externalController: state.externalController,
+        secret: state.secret,
+        unifiedDelay: state.unifiedDelay,
+        mixedPort: state.mixedPort,
+        geoAutoUpdate: state.geoAutoUpdate,
+        geoUpdateInterval: state.geoUpdateInterval,
+      ),
+    ),
+  );
+}
+
+@riverpod
+TrayState trayState(Ref ref) {
+  final isStart = ref.watch(runTimeProvider.select((state) => state != null));
+  final systemProxy = ref.watch(
+    networkSettingProvider.select((state) => state.systemProxy),
+  );
+  final clashConfig = ref.watch(
+    patchClashConfigProvider.select(
+      (state) => (
+        mode: state.mode,
+        mixedPort: state.mixedPort,
+        tunEnable: state.tun.enable,
+      ),
+    ),
+  );
+  final autoLaunch = ref.watch(
+    appSettingProvider.select((state) => state.autoLaunch),
+  );
+  final showNetworkSpeed = ref.watch(
+    vpnSettingProvider.select((state) => state.networkSpeedNotification),
+  );
+  final showTrayProxySelection = ref.watch(
+    appSettingProvider.select((state) => state.showTrayProxySelection),
+  );
+  final monochromeTrayIcon = ref.watch(
+    themeSettingProvider.select((state) => state.monochromeTrayIcon),
+  );
+  final currentGroups = ref.watch(currentGroupsStateProvider).value;
+  final groupNowMap = ref.watch(
+    groupsProvider.select(
+      (groups) => {for (final group in groups) group.name: group.now},
+    ),
+  );
+  final groups = currentGroups
+      .map((group) => group.copyWith(now: groupNowMap[group.name]))
+      .toList();
+  final selectedMap = ref.watch(selectedMapProvider);
+
+  return TrayState(
+    mode: clashConfig.mode,
+    port: clashConfig.mixedPort,
+    autoLaunch: autoLaunch,
+    systemProxy: systemProxy,
+    tunEnable: clashConfig.tunEnable,
+    isStart: isStart,
+    groups: showTrayProxySelection ? groups : const [],
+    selectedMap: selectedMap,
+    showNetworkSpeed: showNetworkSpeed,
+    monochromeTrayIcon: monochromeTrayIcon,
+  );
+}
+
+@riverpod
+VpnState vpnState(Ref ref) {
+  final vpnProps = ref.watch(vpnSettingProvider);
+  final stack = ref.watch(
+    patchClashConfigProvider.select((state) => state.tun.stack),
+  );
+  return VpnState(stack: stack, vpnProps: vpnProps);
+}
+
+@riverpod
+PackageListSelectorState packageListSelectorState(Ref ref) {
+  final packages = ref.watch(packagesProvider);
+  final accessControlProps = ref.watch(
+    vpnSettingProvider.select((state) => state.accessControlProps),
+  );
+  return PackageListSelectorState(
+    packages: packages,
+    accessControlProps: accessControlProps,
+  );
+}
+
+@riverpod
+HotKeyAction getHotKeyAction(Ref ref, HotAction hotAction) {
+  return ref.watch(
+    hotKeyActionsProvider.select((state) {
+      final index = state.indexWhere((item) => item.action == hotAction);
+      return index != -1 ? state[index] : HotKeyAction(action: hotAction);
+    }),
+  );
+}
+
+@riverpod
+({bool isInit, int checkIpNum, bool containsDetection}) checkIp(Ref ref) {
+  final isInit = ref.watch(initProvider);
+  final checkIpNum = ref.watch(checkIpNumProvider);
+  final containsDetection = ref.watch(
+    dashboardStateProvider.select(
+      (state) =>
+          state.dashboardWidgets.contains(DashboardWidget.networkDetection),
+    ),
+  );
+  return (
+    isInit: isInit,
+    checkIpNum: checkIpNum,
+    containsDetection: containsDetection,
+  );
+}
+
+@riverpod
+SharedState sharedState(Ref ref) {
+  ref.watch(loadedLocaleProvider);
+  final currentProfile = ref.watch(
+    currentProfileProvider.select(
+      (state) => CurrentProfileSelectorState(
+        label: state?.label ?? '',
+        selectedMap: state?.selectedMap ?? {},
+      ),
+    ),
+  );
+  final appSetting = ref.watch(
+    appSettingProvider.select(
+      (state) => (
+        onlyStatisticsProxy: state.onlyStatisticsProxy,
+        showStopAction: state.showNotificationStopAction,
+        testUrl: state.testUrl,
+        collapseQuickSettingsPanel: state.collapseQuickSettingsPanel,
+        showQuickSettingsProfileName: state.showQuickSettingsProfileName,
+      ),
+    ),
+  );
+  final networkSetting = ref.watch(
+    networkSettingProvider.select(
+      (state) => (
+        bypassDomain: state.bypassDomain,
+        routeMode: state.routeMode,
+        authenticated: state.authentication.credentials.isNotEmpty,
+      ),
+    ),
+  );
+  final clashConfig = ref.watch(
+    patchClashConfigProvider.select(
+      (state) => (
+        stack: state.tun.stack.name,
+        mixedPort: state.mixedPort,
+        mtu: state.tun.mtu,
+        routeAddress: state.tun.resolveRouteAddress(networkSetting.routeMode),
+      ),
+    ),
+  );
+  final vpnSetting = ref.watch(vpnSettingProvider);
+  final currentProfileName = currentProfile.label;
+  final selectedMap = currentProfile.selectedMap;
+  final onlyStatisticsProxy = appSetting.onlyStatisticsProxy;
+  final testUrl = appSetting.testUrl;
+  final stack = clashConfig.stack;
+  final port = clashConfig.mixedPort;
+  return SharedState(
+    currentProfileName: currentProfileName,
+    onlyStatisticsProxy: onlyStatisticsProxy,
+    showStopAction: appSetting.showStopAction,
+    stopText: currentAppLocalizations.stop,
+    networkSpeedNotification: vpnSetting.networkSpeedNotification,
+    collapseQuickSettingsPanel: appSetting.collapseQuickSettingsPanel,
+    showQuickSettingsProfileName: appSetting.showQuickSettingsProfileName,
+    excludeSSIDs: ref.watch(excludeSSIDsProvider),
+    alwaysOn: ref.watch(alwaysOnProvider),
+    stopTip: currentAppLocalizations.stopVpn,
+    startTip: currentAppLocalizations.startVpn,
+    setupParams: SetupParams(selectedMap: selectedMap, testUrl: testUrl),
+    vpnOptions: VpnOptions(
+      enable: vpnSetting.enable,
+      stack: stack,
+      // VpnService.setHttpProxy cannot carry credentials, so an authenticated
+      // mixed port must not be declared as the system HTTP proxy; traffic
+      // still flows through TUN.
+      systemProxy: vpnSetting.systemProxy && !networkSetting.authenticated,
+      port: port,
+      ipv6: vpnSetting.ipv6,
+      captureDns: vpnSetting.dnsHijacking,
+      accessControlProps: vpnSetting.accessControlProps,
+      allowBypass: vpnSetting.allowBypass,
+      suspendSupport: vpnSetting.suspendSupport,
+      bypassDomain: networkSetting.bypassDomain,
+      mtu: clashConfig.mtu,
+      routeAddress: clashConfig.routeAddress,
+      disableIcmpForwarding: ref.watch(
+        patchClashConfigProvider.select(
+          (state) => state.tun.disableIcmpForwarding,
+        ),
+      ),
+      endpointIndependentNat: ref.watch(
+        patchClashConfigProvider.select(
+          (state) => state.tun.endpointIndependentNat,
+        ),
+      ),
+      congestionController: ref.watch(
+        patchClashConfigProvider.select(
+          (state) => state.tun.congestionController,
+        ),
+      ),
+      recvMsgX: ref.watch(
+        patchClashConfigProvider.select((state) => state.tun.recvMsgX),
+      ),
+      sendMsgX: ref.watch(
+        patchClashConfigProvider.select((state) => state.tun.sendMsgX),
+      ),
+      includeAllNetworks: vpnSetting.includeAllNetworks,
+      excludeLocalNetworks: vpnSetting.excludeLocalNetworks,
+      excludeAPNs: vpnSetting.excludeAPNs,
+      excludeCellularServices: vpnSetting.excludeCellularServices,
+      enforceRoutes: vpnSetting.enforceRoutes,
+      excludeDeviceCommunication: vpnSetting.excludeDeviceCommunication,
+    ),
+  );
+}
+
+@riverpod
+class AccessControlState extends _$AccessControlState
+    with AutoDisposeNotifierMixin {
+  @override
+  AccessControlProps build() => const AccessControlProps();
+}
+
+@riverpod
+bool suspend(Ref ref) {
+  final currentSSID = ref.watch(currentSSIDProvider);
+  final excludeSSIDs = ref.watch(excludeSSIDsProvider);
+  return excludeSSIDs.contains(currentSSID);
+}

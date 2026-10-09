@@ -1,0 +1,190 @@
+import 'package:fl_clash/application.dart';
+import 'package:fl_clash/common/navigator.dart';
+import 'package:fl_clash/manager/hotkey_manager.dart';
+import 'package:fl_clash/manager/manager.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+const _leaf = SizedBox.shrink();
+
+Widget? _childOf(Widget widget) {
+  return switch (widget) {
+    AppEnvManager(:final child) => child,
+    LocaleManager(:final child) => child,
+    StatusManager(:final child) => child,
+    ThemeManager(:final child) => child,
+    BackManager(:final child) => child,
+    WindowManager(:final child) => child,
+    TrayManager(:final child) => child,
+    HotKeyManager(:final child) => child,
+    ProxyManager(:final child) => child,
+    MobileManager(:final child) => child,
+    TileManager(:final child) => child,
+    AppStateManager(:final child) => child,
+    CoreManager(:final child) => child,
+    ConnectivityManager(:final child) => child,
+    WindowHeaderContainer(:final child) => child,
+    VpnManager(:final child) => child,
+    _ => null,
+  };
+}
+
+List<Type> _chainFrom(Widget root) {
+  final types = <Type>[];
+  Widget? current = root;
+  while (current != null && current is! SizedBox) {
+    types.add(current.runtimeType);
+    current = _childOf(current);
+  }
+  return types;
+}
+
+Widget? _innermostChildOf(Widget root) {
+  Widget? current = root;
+  Widget? previous;
+  while (current != null && current is! SizedBox) {
+    previous = current;
+    current = _childOf(current);
+  }
+  return current ?? previous;
+}
+
+Widget _stack({required bool isDesktop, bool isAndroid = false}) {
+  return buildManagerStack(
+    isDesktop: isDesktop,
+    isAndroid: isAndroid,
+    onConnectivityChanged: (_) async {},
+    child: _leaf,
+  );
+}
+
+void main() {
+  test('page transitions follow platform and view capabilities', () {
+    final mobile = buildPageTransitionsTheme(
+      predictiveBack: false,
+      isMobile: true,
+    );
+    final desktop = buildPageTransitionsTheme(
+      predictiveBack: false,
+      isMobile: false,
+    );
+    final predictive = buildPageTransitionsTheme(
+      predictiveBack: true,
+      isMobile: true,
+    );
+
+    expect(
+      mobile.builders[TargetPlatform.android],
+      same(commonSharedXPageTransitions),
+    );
+    expect(
+      desktop.builders[TargetPlatform.windows],
+      same(commonDesktopFadePageTransitions),
+    );
+    expect(
+      predictive.builders[TargetPlatform.android],
+      isA<PredictiveBackPageTransitionsBuilder>(),
+    );
+    expect(
+      mobile.builders[TargetPlatform.iOS],
+      same(const PageTransitionsTheme().builders[TargetPlatform.iOS]!),
+    );
+  });
+
+  test('the desktop manager stack nests in ownership order', () {
+    expect(_chainFrom(_stack(isDesktop: true)), [
+      AppEnvManager,
+      LocaleManager,
+      StatusManager,
+      ThemeManager,
+      BackManager,
+      WindowManager,
+      TrayManager,
+      HotKeyManager,
+      ProxyManager,
+      AppStateManager,
+      CoreManager,
+      ConnectivityManager,
+      WindowHeaderContainer,
+    ]);
+  });
+
+  test('the mobile manager stack nests in ownership order', () {
+    expect(_chainFrom(_stack(isDesktop: false, isAndroid: true)), [
+      AppEnvManager,
+      LocaleManager,
+      StatusManager,
+      ThemeManager,
+      BackManager,
+      MobileManager,
+      TileManager,
+      AppStateManager,
+      CoreManager,
+      ConnectivityManager,
+      VpnManager,
+    ]);
+  });
+
+  test('desktop-only managers never appear on mobile', () {
+    final mobile = _chainFrom(_stack(isDesktop: false, isAndroid: true));
+
+    expect(
+      mobile,
+      isNot(
+        anyOf(
+          contains(WindowManager),
+          contains(TrayManager),
+          contains(HotKeyManager),
+          contains(ProxyManager),
+          contains(WindowHeaderContainer),
+        ),
+      ),
+    );
+  });
+
+  test('mobile-only managers never appear on desktop', () {
+    final desktop = _chainFrom(_stack(isDesktop: true));
+
+    expect(
+      desktop,
+      isNot(
+        anyOf(
+          contains(MobileManager),
+          contains(TileManager),
+          contains(VpnManager),
+        ),
+      ),
+    );
+  });
+
+  test('iOS includes VPN restart prompts', () {
+    final ios = _chainFrom(_stack(isDesktop: false));
+
+    expect(ios, containsAllInOrder([MobileManager, TileManager]));
+    expect(ios, contains(VpnManager));
+  });
+
+  test('Core is mounted before the connectivity callback can fire', () {
+    for (final isDesktop in [true, false]) {
+      final chain = _chainFrom(
+        _stack(isDesktop: isDesktop, isAndroid: !isDesktop),
+      );
+
+      expect(
+        chain.indexOf(CoreManager),
+        lessThan(chain.indexOf(ConnectivityManager)),
+        reason: 'connectivity changes read Core-backed state',
+      );
+    }
+  });
+
+  test('the app content stays the innermost child', () {
+    for (final isDesktop in [true, false]) {
+      expect(
+        _innermostChildOf(_stack(isDesktop: isDesktop, isAndroid: !isDesktop)),
+        same(_leaf),
+        reason: 'every manager must wrap the app content, not replace it',
+      );
+    }
+  });
+}

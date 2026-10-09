@@ -1,0 +1,90 @@
+package cc.flclash.mg
+
+import android.annotation.SuppressLint
+import android.content.SharedPreferences
+import android.os.Build
+import android.service.quicksettings.Tile
+import cc.flclash.mg.common.GlobalState
+import cc.flclash.mg.common.QuickAction
+import cc.flclash.mg.common.quickIntent
+import cc.flclash.mg.common.toPendingIntent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
+class TileService : android.service.quicksettings.TileService() {
+    private var scope: CoroutineScope? = null
+    private val preferences by lazy {
+        getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+    }
+    private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "flutter.sharedState") {
+            updateTile(ServiceState.runState.value)
+        }
+    }
+
+    override fun onStartListening() {
+        super.onStartListening()
+        scope?.cancel()
+        preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope ->
+            scope.launch {
+                ServiceState.refresh()
+                ServiceState.runState.collect(::updateTile)
+            }
+        }
+    }
+
+    override fun onClick() {
+        super.onClick()
+        if (application.sharedState.collapseQuickSettingsPanel) {
+            openQuickAction()
+        } else {
+            GlobalState.launch { ServiceState.handleToggleAction() }
+        }
+    }
+
+    override fun onStopListening() {
+        scope?.cancel()
+        scope = null
+        preferences.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+        super.onStopListening()
+    }
+
+    private fun updateTile(runState: RunState) {
+        qsTile?.apply {
+            state = when (runState) {
+                RunState.STARTED -> Tile.STATE_ACTIVE
+                RunState.STARTING, RunState.STOPPING -> Tile.STATE_UNAVAILABLE
+                RunState.STOPPED -> Tile.STATE_INACTIVE
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val sharedState = application.sharedState
+                subtitle = if (sharedState.showQuickSettingsProfileName) {
+                    sharedState.currentProfileName.takeIf {
+                        runState == RunState.STARTED && it.isNotBlank()
+                    }
+                } else {
+                    getString(
+                        if (runState == RunState.STARTED) R.string.connected
+                        else R.string.disconnected
+                    )
+                }
+            }
+            updateTile()
+        }
+    }
+
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    private fun openQuickAction() {
+        val intent = QuickAction.TOGGLE.quickIntent
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startActivityAndCollapse(intent.toPendingIntent)
+        } else {
+            @Suppress("DEPRECATION")
+            startActivityAndCollapse(intent)
+        }
+    }
+}

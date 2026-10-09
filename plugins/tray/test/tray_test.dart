@@ -1,0 +1,661 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:tray/tray.dart';
+
+const MethodChannel _channel = MethodChannel('tray');
+const StandardMethodCodec _codec = StandardMethodCodec();
+
+TraySpec _spec({List<TrayMenuItem> menu = const []}) {
+  return TraySpec(
+    icon: const TrayIcon.asset('assets/icon.ico'),
+    toolTip: 'FlClash',
+    menu: menu,
+  );
+}
+
+Future<void> _emit(String method, Object? arguments) {
+  return TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .handlePlatformMessage(
+        _channel.name,
+        _codec.encodeMethodCall(MethodCall(method, arguments)),
+        (_) {},
+      );
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  late List<MethodCall> calls;
+  late bool showResult;
+  Completer<void>? showGate;
+
+  int showCount() => calls.where((call) => call.method == 'show').length;
+
+  setUp(() {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    calls = [];
+    showResult = true;
+    showGate = null;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_channel, (call) async {
+          calls.add(call);
+          if (call.method == 'show') {
+            await showGate?.future;
+            return showResult;
+          }
+          return true;
+        });
+    Tray.instance.resetForTesting();
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_channel, null);
+    Tray.instance.resetForTesting();
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  test('a rejected show stays invisible and is retried', () async {
+    showResult = false;
+    await Tray.instance.show(_spec());
+
+    expect(showCount(), 1);
+    expect(Tray.instance.isVisible, isFalse);
+
+    showResult = true;
+    await Tray.instance.show(_spec());
+
+    expect(showCount(), 2);
+    expect(Tray.instance.isVisible, isTrue);
+  });
+
+  test(
+    'an unchanged payload is suppressed only after an accepted show',
+    () async {
+      showResult = true;
+      await Tray.instance.show(_spec());
+      await Tray.instance.show(_spec());
+
+      expect(showCount(), 1);
+
+      showResult = false;
+      await Tray.instance.show(_spec(menu: const [TrayMenuAction(label: 'a')]));
+      await Tray.instance.show(_spec(menu: const [TrayMenuAction(label: 'a')]));
+
+      expect(showCount(), 3);
+    },
+  );
+
+  test('titles queued behind a stalled call collapse to the newest', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    await Tray.instance.show(_spec());
+
+    final gate = Completer<void>();
+    showGate = gate;
+    final stalled = Tray.instance.show(
+      _spec(menu: const [TrayMenuAction(label: 'a')]),
+    );
+    unawaited(Tray.instance.setTitle('1'));
+    unawaited(Tray.instance.setTitle('2'));
+    final settled = Tray.instance.setTitle('3');
+    gate.complete();
+    await stalled;
+    await settled;
+
+    final titles = calls
+        .where((call) => call.method == 'setTitle')
+        .map((call) => (call.arguments as Map)['title'])
+        .toList();
+    expect(
+      titles,
+      ['3'],
+      reason:
+          'a native call that blocks the queue must not replay every title '
+          'that piled up behind it',
+    );
+  });
+
+  for (final platform in [
+    TargetPlatform.windows,
+    TargetPlatform.macOS,
+    TargetPlatform.linux,
+  ]) {
+    test(
+      'large $platform menus patch selection and refresh callbacks',
+      () async {
+        debugDefaultTargetPlatformOverride = platform;
+        var selected = -1;
+        TraySpec menu(int selection) => _spec(
+          menu: [
+            TrayMenuSubmenu(
+              key: 'group',
+              label: 'Group',
+              sublabel: 'node-$selection',
+              items: List.generate(
+                2000,
+                (i) => TrayMenuCheckbox(
+                  key: 'node-$i',
+                  label: 'node-$i',
+                  checked: i == selection,
+                  onSelected: () => selected = selection,
+                ),
+              ),
+            ),
+          ],
+        );
+        await Tray.instance.show(menu(0));
+        await Tray.instance.show(menu(1999));
+        expect(calls.map((call) => call.method), ['show', 'updateMenuItems']);
+        expect((calls.last.arguments as Map)['updates'], [
+          {'key': 'node-0', 'checked': false},
+          {'key': 'node-1999', 'checked': true},
+          {'key': 'group', 'sublabel': 'node-1999'},
+        ]);
+        await _emit('onMenuItemSelected', {'id': 1025});
+        expect(selected, 1999);
+        await Tray.instance.show(menu(1999));
+        expect(calls, hasLength(2));
+        await Tray.instance.show(_spec());
+        expect(showCount(), 2);
+      },
+    );
+
+    test('$platform rejected menu patches fall back to a full show', () async {
+      debugDefaultTargetPlatformOverride = platform;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_channel, (call) async {
+            calls.add(call);
+            return call.method != 'updateMenuItems';
+          });
+      await Tray.instance.show(
+        _spec(
+          menu: const [
+            TrayMenuCheckbox(key: 'node', label: 'Node', checked: false),
+          ],
+        ),
+      );
+      await Tray.instance.show(
+        _spec(
+          menu: const [
+            TrayMenuCheckbox(key: 'node', label: 'Node', checked: true),
+          ],
+        ),
+      );
+      expect(calls.map((call) => call.method), [
+        'show',
+        'updateMenuItems',
+        'show',
+      ]);
+    });
+
+    test(
+      '$platform reconciles a refreshed menu after live delay updates',
+      () async {
+        debugDefaultTargetPlatformOverride = platform;
+        final spec = _spec(
+          menu: const [
+            TrayMenuCheckbox(key: 'node', label: 'Node', checked: false),
+          ],
+        );
+        await Tray.instance.show(spec);
+        await Tray.instance.updateMenuItems(const [
+          TrayMenuItemUpdate(key: 'node', sublabel: '42 ms'),
+        ]);
+        await Tray.instance.show(spec);
+        expect(showCount(), 1);
+        expect((calls.last.arguments as Map)['updates'], [
+          {'key': 'node', 'sublabel': ''},
+        ]);
+      },
+    );
+
+    test('$platform preserves live delays when selection changes', () async {
+      debugDefaultTargetPlatformOverride = platform;
+      TraySpec menu({String? delay, bool checked = false}) => _spec(
+        menu: [
+          TrayMenuSubmenu(
+            key: 'group',
+            label: 'Group',
+            items: [
+              TrayMenuCheckbox(
+                key: 'node',
+                label: 'Node',
+                checked: checked,
+                sublabel: delay,
+              ),
+            ],
+          ),
+        ],
+      );
+      await Tray.instance.show(menu());
+      await Tray.instance.updateMenuItems(const [
+        TrayMenuItemUpdate(key: 'node', sublabel: '42 ms'),
+      ]);
+      await Tray.instance.show(menu(delay: '42 ms', checked: true));
+
+      expect(showCount(), 1);
+      expect((calls.last.arguments as Map)['updates'], [
+        {'key': 'node', 'checked': true},
+      ]);
+      await Tray.instance.show(menu(delay: '42 ms', checked: true));
+      expect(calls, hasLength(3));
+    });
+  }
+
+  group('Windows menu tracking', () {
+    late Completer<void> menuClosed;
+
+    setUp(() {
+      menuClosed = Completer<void>();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_channel, (call) async {
+            calls.add(call);
+            if (call.method == 'openMenu') {
+              await menuClosed.future;
+            }
+            return true;
+          });
+    });
+
+    TraySpec nodes(List<String> names, void Function(String) onSelected) =>
+        _spec(
+          menu: [
+            for (final name in names)
+              TrayMenuCheckbox(
+                key: name,
+                label: name,
+                checked: false,
+                onSelected: () => onSelected(name),
+              ),
+          ],
+        );
+
+    test(
+      'defers reordering while delays and old callbacks stay live',
+      () async {
+        final selected = <String>[];
+        await Tray.instance.show(nodes(['a', 'b'], selected.add));
+        final open = Tray.instance.openMenu();
+        await Future<void>.delayed(Duration.zero);
+        await Tray.instance.show(nodes(['b', 'a'], selected.add));
+        await Tray.instance.updateMenuItems(const [
+          TrayMenuItemUpdate(key: 'a', sublabel: '1234 ms'),
+        ]);
+        await _emit('onMenuItemSelected', {'id': 1024});
+
+        expect(showCount(), 1);
+        expect(selected, ['a']);
+        expect(calls.last.method, 'updateMenuItems');
+
+        menuClosed.complete();
+        await open;
+
+        expect(showCount(), 2);
+        final menu = (calls.last.arguments as Map)['menu'] as List;
+        expect(menu.map((item) => (item as Map)['key']), ['b', 'a']);
+        expect(menu[1], containsPair('sublabel', '1234 ms'));
+        await _emit('onMenuItemSelected', {'id': 1024});
+        expect(selected, ['a', 'b']);
+      },
+    );
+
+    test('only applies the latest deferred menu', () async {
+      await Tray.instance.show(nodes(['a'], (_) {}));
+      final open = Tray.instance.openMenu();
+      await Future<void>.delayed(Duration.zero);
+      await Tray.instance.show(nodes(['b'], (_) {}));
+      await Tray.instance.show(nodes(['c'], (_) {}));
+      expect(showCount(), 1);
+
+      menuClosed.complete();
+      await open;
+      expect(showCount(), 2);
+      final menu = (calls.last.arguments as Map)['menu'] as List;
+      expect(menu.single, containsPair('key', 'c'));
+    });
+
+    test('a newer unchanged menu cancels a deferred replacement', () async {
+      final spec = nodes(['a'], (_) {});
+      await Tray.instance.show(spec);
+      final open = Tray.instance.openMenu();
+      await Future<void>.delayed(Duration.zero);
+      await Tray.instance.show(nodes(['b'], (_) {}));
+      await Tray.instance.show(spec);
+
+      menuClosed.complete();
+      await open;
+      expect(showCount(), 1);
+    });
+
+    test('hide discards a deferred replacement', () async {
+      await Tray.instance.show(nodes(['a'], (_) {}));
+      final open = Tray.instance.openMenu();
+      await Future<void>.delayed(Duration.zero);
+      await Tray.instance.show(nodes(['b'], (_) {}));
+      await Tray.instance.hide();
+
+      menuClosed.complete();
+      await open;
+      expect(showCount(), 1);
+      expect(Tray.instance.isVisible, isFalse);
+      expect(calls.last.method, 'hide');
+    });
+
+    test(
+      'a failed popup releases deferred work and allows reopening',
+      () async {
+        await Tray.instance.show(nodes(['a'], (_) {}));
+        final open = Tray.instance.openMenu();
+        final failure = expectLater(open, throwsA(isA<PlatformException>()));
+        await Future<void>.delayed(Duration.zero);
+        await Tray.instance.show(nodes(['b'], (_) {}));
+        menuClosed.completeError(PlatformException(code: 'popup_failed'));
+        await failure;
+        expect(showCount(), 2);
+
+        menuClosed = Completer<void>()..complete();
+        await Tray.instance.openMenu();
+        expect(calls.where((call) => call.method == 'openMenu'), hasLength(2));
+      },
+    );
+
+    test('ignores repeated open requests while tracking', () async {
+      await Tray.instance.show(nodes(['a'], (_) {}));
+      final open = Tray.instance.openMenu();
+      await Future<void>.delayed(Duration.zero);
+      await Tray.instance.openMenu();
+      expect(calls.where((call) => call.method == 'openMenu'), hasLength(1));
+      menuClosed.complete();
+      await open;
+    });
+  });
+
+  test('menu selection dispatches only for known integer ids', () async {
+    var selected = 0;
+    await Tray.instance.show(
+      _spec(
+        menu: [TrayMenuAction(label: 'a', onSelected: () => selected++)],
+      ),
+    );
+
+    await _emit('onMenuItemSelected', <String, Object?>{'id': 1024});
+    expect(selected, 1);
+
+    await _emit('onMenuItemSelected', <String, Object?>{'id': 4096});
+    await _emit('onMenuItemSelected', <String, Object?>{'id': '1024'});
+    await _emit('onMenuItemSelected', null);
+    expect(selected, 1);
+  });
+
+  test('icon activation forwards native activation details', () async {
+    final received = Tray.instance.events.first;
+    await _emit('onIconActivated', <String, Object?>{
+      'activationTimestamp': 1234,
+      'activationToken': 'wayland-token',
+    });
+
+    final event = await received as TrayIconActivated;
+    expect(event.activationTimestamp, 1234);
+    expect(event.activationToken, 'wayland-token');
+  });
+
+  test(
+    'icon activation accepts absent or invalid activation details',
+    () async {
+      for (final arguments in <Object?>[
+        null,
+        'invalid',
+        {'activationTimestamp': -1, 'activationToken': ''},
+        {'activationTimestamp': '1234', 'activationToken': 1234},
+      ]) {
+        final received = Tray.instance.events.first;
+        await _emit('onIconActivated', arguments);
+
+        final event = await received as TrayIconActivated;
+        expect(event.activationTimestamp, isNull);
+        expect(event.activationToken, isNull);
+      }
+    },
+  );
+
+  test('menu selection forwards native activation details', () async {
+    TrayMenuSelectionDetails? received;
+    await Tray.instance.show(
+      _spec(
+        menu: [
+          TrayMenuAction(
+            label: 'show',
+            onSelectedWithDetails: (details) => received = details,
+          ),
+        ],
+      ),
+    );
+
+    await _emit('onMenuItemSelected', <String, Object?>{
+      'id': 1024,
+      'activationTimestamp': 1234,
+      'activationToken': 'wayland-token',
+    });
+
+    expect(received?.activationTimestamp, 1234);
+    expect(received?.activationToken, 'wayland-token');
+  });
+
+  test('show encodes advanced menu presentation and brightness', () async {
+    await Tray.instance.show(
+      const TraySpec(
+        icon: TrayIcon.asset('assets/icon.ico'),
+        brightness: Brightness.dark,
+        menu: [
+          TrayMenuAction(
+            label: 'test',
+            sublabel: '...',
+            sublabelStyle: TrayMenuItemSublabelStyle.muted,
+            keepsMenuOpen: true,
+            keyEquivalent: 't',
+            keyEquivalentModifiers: {TrayMenuItemModifier.command},
+          ),
+        ],
+      ),
+    );
+
+    final arguments = calls.single.arguments as Map;
+    final item = (arguments['menu'] as List).single as Map;
+    expect(arguments['brightness'], 'dark');
+    expect(item['sublabel'], '...');
+    expect(item['sublabelStyle'], 'muted');
+    expect(item['keepsMenuOpen'], isTrue);
+    expect(item['keyEquivalent'], 't');
+    expect(item['keyEquivalentModifiers'], ['command']);
+  });
+
+  test(
+    'propagates a native unknown-key result without invalidating show',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_channel, (call) async {
+            calls.add(call);
+            return call.method == 'updateMenuItems' ? false : true;
+          });
+      final spec = _spec(
+        menu: const [TrayMenuAction(key: 'known', label: 'Known')],
+      );
+      await Tray.instance.show(spec);
+
+      expect(
+        await Tray.instance.updateMenuItems(const [
+          TrayMenuItemUpdate(key: 'missing', enabled: false),
+        ]),
+        isFalse,
+      );
+      await Tray.instance.show(spec);
+
+      expect(showCount(), 1);
+    },
+  );
+
+  test('batch menu updates use one native call', () async {
+    await Tray.instance.show(
+      _spec(
+        menu: const [
+          TrayMenuAction(key: 'first', label: 'First'),
+          TrayMenuCheckbox(key: 'second', label: 'Second', checked: false),
+        ],
+      ),
+    );
+
+    expect(
+      await Tray.instance.updateMenuItems(const [
+        TrayMenuItemUpdate(
+          key: 'first',
+          sublabel: '12 ms',
+          sublabelStyle: TrayMenuItemSublabelStyle.badge,
+        ),
+        TrayMenuItemUpdate(key: 'second', enabled: false, checked: true),
+      ]),
+      isTrue,
+    );
+
+    final updateCall = calls.last;
+    expect(updateCall.method, 'updateMenuItems');
+    expect(updateCall.arguments, {
+      'updates': [
+        {'key': 'first', 'sublabel': '12 ms', 'sublabelStyle': 'badge'},
+        {'key': 'second', 'enabled': false, 'checked': true},
+      ],
+    });
+    expect(
+      calls.where((call) => call.method == 'updateMenuItems'),
+      hasLength(1),
+    );
+  });
+
+  test('an empty batch does not call the platform', () async {
+    await Tray.instance.show(_spec());
+    final before = calls.length;
+
+    expect(await Tray.instance.updateMenuItems(const []), isTrue);
+
+    expect(calls, hasLength(before));
+  });
+
+  test('openMenu encodes the optional Windows owner preference', () async {
+    await Tray.instance.show(_spec());
+
+    await Tray.instance.openMenu();
+    await Tray.instance.openMenu(bringAppToFront: true);
+
+    final openCalls = calls.where((call) => call.method == 'openMenu').toList();
+    expect(openCalls.map((call) => call.arguments), [
+      {'bringAppToFront': false},
+      {'bringAppToFront': true},
+    ]);
+  });
+
+  test('openMenu waits for an in-flight show and coalesces requests', () async {
+    await Tray.instance.show(_spec());
+    final gate = Completer<void>();
+    showGate = gate;
+
+    final stalled = Tray.instance.show(
+      _spec(menu: const [TrayMenuAction(label: 'changed')]),
+    );
+    final defaultOwner = Tray.instance.openMenu();
+    final appOwner = Tray.instance.openMenu(bringAppToFront: true);
+    gate.complete();
+
+    await Future.wait([stalled, defaultOwner, appOwner]);
+    final orderedCalls = calls.skip(1).toList();
+    expect(orderedCalls.map((call) => call.method), ['show', 'openMenu']);
+    expect(orderedCalls.skip(1).map((call) => call.arguments), [
+      {'bringAppToFront': false},
+    ]);
+  });
+
+  for (final platform in [TargetPlatform.macOS, TargetPlatform.windows]) {
+    test(
+      'an open ${platform.name} menu does not block live item updates',
+      () async {
+        debugDefaultTargetPlatformOverride = platform;
+        final menuClosed = Completer<void>();
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(_channel, (call) async {
+              calls.add(call);
+              if (call.method == 'openMenu') {
+                await menuClosed.future;
+              }
+              return true;
+            });
+        await Tray.instance.show(
+          _spec(
+            menu: const [TrayMenuAction(key: 'delay', label: 'Delay test')],
+          ),
+        );
+
+        final open = Tray.instance.openMenu();
+        await Future<void>.delayed(Duration.zero);
+        final update = Tray.instance.updateMenuItems(const [
+          TrayMenuItemUpdate(key: 'delay', enabled: false),
+        ]);
+        await update;
+
+        expect(calls.map((call) => call.method), [
+          'show',
+          'openMenu',
+          'updateMenuItems',
+        ]);
+        menuClosed.complete();
+        await open;
+      },
+    );
+  }
+
+  test('a rejected show keeps callbacks for the visible menu', () async {
+    var oldSelected = 0;
+    var newSelected = 0;
+    await Tray.instance.show(
+      _spec(
+        menu: [TrayMenuAction(label: 'old', onSelected: () => oldSelected++)],
+      ),
+    );
+
+    showResult = false;
+    await Tray.instance.show(
+      _spec(
+        menu: [TrayMenuAction(label: 'new', onSelected: () => newSelected++)],
+      ),
+    );
+    await _emit('onMenuItemSelected', <String, Object?>{'id': 1024});
+
+    expect([oldSelected, newSelected], [1, 0]);
+  });
+
+  test(
+    'an unchanged accepted show refreshes callbacks without a native show',
+    () async {
+      var oldSelected = 0;
+      var newSelected = 0;
+      await Tray.instance.show(
+        _spec(
+          menu: [
+            TrayMenuAction(label: 'item', onSelected: () => oldSelected++),
+          ],
+        ),
+      );
+      await Tray.instance.show(
+        _spec(
+          menu: [
+            TrayMenuAction(label: 'item', onSelected: () => newSelected++),
+          ],
+        ),
+      );
+      await _emit('onMenuItemSelected', <String, Object?>{'id': 1024});
+
+      expect(showCount(), 1);
+      expect([oldSelected, newSelected], [0, 1]);
+    },
+  );
+}

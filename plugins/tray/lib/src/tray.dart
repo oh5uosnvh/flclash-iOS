@@ -1,0 +1,435 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart' as svg;
+import 'package:path/path.dart' as path;
+
+import 'tray_capabilities.dart';
+import 'tray_codec.dart';
+import 'tray_event.dart';
+import 'tray_menu.dart';
+import 'tray_spec.dart';
+
+const String _methodShow = 'show';
+const String _methodHide = 'hide';
+const String _methodSetTitle = 'setTitle';
+const String _methodOpenMenu = 'openMenu';
+const String _methodUpdateMenuItems = 'updateMenuItems';
+
+const String _eventIconActivated = 'onIconActivated';
+const String _eventMenuRequested = 'onMenuRequested';
+const String _eventMenuItemSelected = 'onMenuItemSelected';
+
+final class Tray {
+  Tray._() {
+    _channel.setMethodCallHandler(_onPlatformCall);
+  }
+
+  static final Tray instance = Tray._();
+  final _svgRepresentations = <String, List<Map<String, Object?>>>{};
+
+  final MethodChannel _channel = const MethodChannel('tray');
+
+  final StreamController<TrayEvent> _events =
+      StreamController<TrayEvent>.broadcast();
+
+  Map<int, TrayMenuItem> _itemsById = const {};
+  Future<void> _queue = Future<void>.value();
+  String? _signature;
+  EncodedTray? _encoded;
+  Brightness? _brightness;
+  String _title = '';
+  String _requestedTitle = '';
+  bool _isVisible = false;
+  bool _isMenuOpen = false;
+  ({TraySpec spec, EncodedTray encoded})? _pendingShow;
+
+  Stream<TrayEvent> get events => _events.stream;
+
+  TrayCapabilities get capabilities =>
+      TrayCapabilities.of(defaultTargetPlatform);
+
+  bool get isVisible => _isVisible;
+
+  Future<void> show(TraySpec spec) {
+    return _serialize(() => _show(spec));
+  }
+
+  Future<void> setTitle(String title) {
+    _requestedTitle = title;
+    return _serialize(() => _setTitle(_requestedTitle));
+  }
+
+  Future<void> hide() {
+    return _serialize(_hide);
+  }
+
+  Future<void> openMenu({bool bringAppToFront = false}) {
+    return _dispatch(() => _openMenu(bringAppToFront));
+  }
+
+  Future<bool> updateMenuItems(List<TrayMenuItemUpdate> updates) {
+    return _serialize(() => _updateMenuItems(updates));
+  }
+
+  @visibleForTesting
+  void resetForTesting() {
+    _svgRepresentations.clear();
+    _itemsById = const {};
+    _queue = Future<void>.value();
+    _signature = null;
+    _encoded = null;
+    _brightness = null;
+    _title = '';
+    _requestedTitle = '';
+    _isVisible = false;
+    _isMenuOpen = false;
+    _pendingShow = null;
+  }
+
+  Future<T> _serialize<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _queue = _queue.then((_) async {
+      try {
+        completer.complete(await action());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<T> _dispatch<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _queue = _queue.then((_) {
+      try {
+        action().then(completer.complete, onError: completer.completeError);
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _show(TraySpec spec, [EncodedTray? snapshot]) async {
+    if (!capabilities.supported) {
+      return;
+    }
+    _pendingShow = null;
+    final encoded = snapshot ?? TrayCodec.encode(spec);
+    if (_isVisible && encoded.signature == _signature) {
+      _itemsById = encoded.itemsById;
+      return;
+    }
+    final previous = _encoded;
+    if (_isVisible && previous != null && _brightness == spec.brightness) {
+      final updates = TrayCodec.menuUpdates(previous, encoded);
+      if (updates != null &&
+          (updates.isEmpty ||
+              await _channel.invokeMethod<bool>(
+                    _methodUpdateMenuItems,
+                    <String, Object?>{'updates': updates},
+                  ) ==
+                  true)) {
+        _itemsById = encoded.itemsById;
+        _signature = encoded.signature;
+        _encoded = encoded;
+        return;
+      }
+    }
+    if (_isMenuOpen) {
+      _pendingShow = (spec: spec, encoded: encoded);
+      return;
+    }
+    final isApplied = await _channel
+        .invokeMethod<bool>(_methodShow, <String, Object?>{
+          'id': _stableId,
+          'icon': await _resolveIcon(spec.icon),
+          'toolTip': encoded.toolTip,
+          'brightness': spec.brightness?.name,
+          'title': _title,
+          'menu': encoded.menu,
+        });
+    if (isApplied != true) {
+      _signature = null;
+      _encoded = null;
+      return;
+    }
+    _itemsById = encoded.itemsById;
+    _signature = encoded.signature;
+    _encoded = encoded;
+    _brightness = spec.brightness;
+    _isVisible = true;
+  }
+
+  Future<void> _setTitle(String title) async {
+    if (!capabilities.title) {
+      return;
+    }
+    final isUnchanged = _title == title;
+    _title = title;
+    if (isUnchanged || !_isVisible) {
+      return;
+    }
+    await _channel.invokeMethod(_methodSetTitle, <String, Object?>{
+      'title': title,
+    });
+  }
+
+  Future<void> _hide() async {
+    _pendingShow = null;
+    _itemsById = const {};
+    _signature = null;
+    _encoded = null;
+    _title = '';
+    if (!_isVisible) {
+      return;
+    }
+    _isVisible = false;
+    await _channel.invokeMethod(_methodHide);
+  }
+
+  Future<void> _openMenu(bool bringAppToFront) async {
+    if (!capabilities.menuControl || !_isVisible || _isMenuOpen) {
+      return;
+    }
+    final tracksMenu = defaultTargetPlatform == TargetPlatform.windows;
+    if (tracksMenu) {
+      _isMenuOpen = true;
+    }
+    try {
+      await _channel.invokeMethod(_methodOpenMenu, <String, Object?>{
+        'bringAppToFront': bringAppToFront,
+      });
+    } finally {
+      if (tracksMenu) {
+        _isMenuOpen = false;
+        await _serialize(() async {
+          final pending = _pendingShow;
+          if (pending != null) {
+            await _show(pending.spec, pending.encoded);
+          }
+        });
+      }
+    }
+  }
+
+  Future<bool> _updateMenuItems(List<TrayMenuItemUpdate> updates) async {
+    if (!_isVisible) {
+      return false;
+    }
+    if (updates.isEmpty) {
+      return true;
+    }
+    final encodedUpdates = updates.map(_encodeMenuItemUpdate).toList();
+    final applied = await _channel.invokeMethod<bool>(
+      _methodUpdateMenuItems,
+      <String, Object?>{'updates': encodedUpdates},
+    );
+    if (applied == true) {
+      _signature = null;
+      final previous = _encoded;
+      if (previous != null) {
+        _encoded = TrayCodec.applyMenuUpdates(previous, encodedUpdates);
+      }
+      final pending = _pendingShow;
+      if (pending != null) {
+        _pendingShow = (
+          spec: pending.spec,
+          encoded: TrayCodec.applyMenuUpdates(pending.encoded, encodedUpdates),
+        );
+      }
+      return true;
+    }
+    return false;
+  }
+
+  Map<String, Object?> _encodeMenuItemUpdate(TrayMenuItemUpdate update) {
+    return <String, Object?>{
+      'key': update.key,
+      'label': ?update.label,
+      'enabled': ?update.enabled,
+      'checked': ?update.checked,
+      'sublabel': ?update.sublabel,
+      'sublabelStyle': ?update.sublabelStyle?.name,
+    };
+  }
+
+  Future<void> _onPlatformCall(MethodCall call) async {
+    switch (call.method) {
+      case _eventIconActivated:
+        final arguments = call.arguments;
+        final timestamp = arguments is Map
+            ? arguments['activationTimestamp']
+            : null;
+        final token = arguments is Map ? arguments['activationToken'] : null;
+        _events.add(
+          TrayIconActivated(
+            activationTimestamp: timestamp is int && timestamp > 0
+                ? timestamp
+                : null,
+            activationToken: token is String && token.isNotEmpty ? token : null,
+          ),
+        );
+      case _eventMenuRequested:
+        _events.add(const TrayMenuRequested());
+      case _eventMenuItemSelected:
+        final arguments = call.arguments;
+        if (arguments is! Map) {
+          return;
+        }
+        final id = arguments['id'];
+        final item = id is int ? _itemsById[id] : null;
+        if (item == null) {
+          return;
+        }
+        final timestamp = arguments['activationTimestamp'];
+        final token = arguments['activationToken'];
+        final details = TrayMenuSelectionDetails(
+          activationTimestamp: timestamp is int && timestamp > 0
+              ? timestamp
+              : null,
+          activationToken: token is String && token.isNotEmpty ? token : null,
+        );
+        switch (item) {
+          case TrayMenuAction(:final onSelected, :final onSelectedWithDetails):
+            onSelectedWithDetails?.call(details);
+            onSelected?.call();
+          case TrayMenuCheckbox(
+            :final onSelected,
+            :final onSelectedWithDetails,
+          ):
+            onSelectedWithDetails?.call(details);
+            onSelected?.call();
+          case TrayMenuSubmenu():
+          case TrayMenuSeparator():
+            return;
+        }
+        _events.add(TrayMenuItemSelected(item));
+    }
+  }
+
+  /// Scales probed in Flutter's `2.0x/` variant layout; the README says how
+  /// each platform consumes them.
+  static const variantScales = [1.0, 2.0, 3.0, 4.0];
+
+  @visibleForTesting
+  static bool Function(String filePath) fileExists = (filePath) =>
+      File(filePath).existsSync();
+
+  @visibleForTesting
+  static String variantAsset(String asset, double scale) {
+    if (scale == 1.0) {
+      return asset;
+    }
+    final directory = path.posix.dirname(asset);
+    return path.posix.joinAll([
+      if (directory != '.') directory,
+      '${scale.toStringAsFixed(1)}x',
+      path.posix.basename(asset),
+    ]);
+  }
+
+  Future<Map<String, Object?>> _resolveIcon(TrayIcon icon) async {
+    final resolved = <String, Object?>{
+      'isTemplate': icon.isTemplate,
+      'size': icon.size,
+      'position': icon.position.name,
+    };
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.macOS:
+        resolved['reps'] = icon.asset.toLowerCase().endsWith('.svg')
+            ? await _loadSvgRepresentations(icon)
+            : await _loadRepresentations(icon.asset);
+      case TargetPlatform.linux:
+        resolved['path'] = _largestBundledVariant(icon.asset);
+      default:
+        resolved['path'] = _bundledPath(icon.asset);
+    }
+    return resolved;
+  }
+
+  Future<List<Map<String, Object?>>> _loadSvgRepresentations(
+    TrayIcon icon,
+  ) async {
+    final key = '${icon.asset}:${icon.size}';
+    final cached = _svgRepresentations[key];
+    if (cached != null) return cached;
+    final source = await rootBundle.loadString(icon.asset);
+    final picture = await svg.vg.loadPicture(svg.SvgStringLoader(source), null);
+    final reps = <Map<String, Object?>>[];
+    try {
+      for (final scale in variantScales) {
+        final size = (icon.size * scale).round();
+        final recorder = ui.PictureRecorder();
+        ui.Canvas(recorder)
+          ..scale(size / picture.size.width, size / picture.size.height)
+          ..drawPicture(picture.picture);
+        final scaled = recorder.endRecording();
+        try {
+          final image = await scaled.toImage(size, size);
+          try {
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            reps.add({
+              'scale': scale,
+              'bytes': base64Encode(bytes!.buffer.asUint8List()),
+            });
+          } finally {
+            image.dispose();
+          }
+        } finally {
+          scaled.dispose();
+        }
+      }
+    } finally {
+      picture.picture.dispose();
+    }
+    return _svgRepresentations[key] = reps;
+  }
+
+  Future<List<Map<String, Object?>>> _loadRepresentations(String asset) async {
+    final reps = <Map<String, Object?>>[];
+    for (final scale in variantScales) {
+      final ByteData data;
+      try {
+        data = await rootBundle.load(variantAsset(asset, scale));
+      } on FlutterError {
+        continue;
+      }
+      reps.add({
+        'scale': scale,
+        'bytes': base64Encode(data.buffer.asUint8List()),
+      });
+    }
+    return reps;
+  }
+
+  String _largestBundledVariant(String asset) {
+    for (final scale in variantScales.reversed) {
+      final candidate = _bundledPath(variantAsset(asset, scale));
+      if (fileExists(candidate)) {
+        return candidate;
+      }
+    }
+    return _bundledPath(asset);
+  }
+
+  String _bundledPath(String asset) {
+    return path.joinAll([
+      path.dirname(Platform.resolvedExecutable),
+      'data',
+      'flutter_assets',
+      asset,
+    ]);
+  }
+
+  String get _stableId {
+    return path.basenameWithoutExtension(Platform.resolvedExecutable);
+  }
+}

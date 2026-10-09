@@ -1,0 +1,721 @@
+import 'dart:convert';
+
+import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/models/models.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:test/test.dart';
+
+/// Helper to round-trip a model through JSON encode/decode.
+T roundTrip<T>(
+  Object? Function() toJson,
+  T Function(Map<String, Object?> json) fromJson,
+) {
+  final encoded = jsonEncode(toJson());
+  final decoded = jsonDecode(encoded) as Map<String, Object?>;
+  return fromJson(decoded);
+}
+
+void main() {
+  test('TUN batch packet options preserve defaults and explicit overrides', () {
+    final defaults = Tun.fromJson({});
+    expect(defaults.recvMsgX, isTrue);
+    expect(defaults.sendMsgX, isTrue);
+    final tun = Tun.fromJson({'recvmsgx': false, 'sendmsgx': false});
+    final json = roundTrip(tun.toJson, Tun.fromJson).toJson();
+    expect(json['recvmsgx'], isFalse);
+    expect(json['sendmsgx'], isFalse);
+  });
+
+  test('TUN congestion controller defaults to cubic and round-trips', () {
+    expect(const Tun().congestionController, TunCongestionController.cubic);
+    expect(
+      Tun.fromJson({}).congestionController,
+      TunCongestionController.cubic,
+    );
+    expect(
+      Tun.fromJson({'congestion-controller': 'future'}).congestionController,
+      TunCongestionController.cubic,
+    );
+    for (final controller in TunCongestionController.values) {
+      final tun = Tun.fromJson({'congestion-controller': controller.name});
+      expect(tun.congestionController, controller);
+      expect(
+        roundTrip(tun.toJson, Tun.fromJson).congestionController,
+        controller,
+      );
+    }
+  });
+
+  test('TUN DNS mode defaults to hijack and round-trips', () {
+    expect(const Tun().dnsMode, TunDnsMode.hijack);
+    expect(Tun.fromJson({}).dnsMode, TunDnsMode.hijack);
+    expect(Tun.fromJson({'dns-mode': 'future'}).dnsMode, TunDnsMode.hijack);
+    for (final mode in TunDnsMode.values) {
+      final tun = Tun.fromJson({'dns-mode': mode.name});
+      expect(tun.dnsMode, mode);
+      expect(tun.toJson()['dns-mode'], mode.name);
+    }
+  });
+
+  test('TUN defaults to mips and preserves saved stack choices', () {
+    expect(const Tun().stack, TunStack.mips);
+    expect(Tun.fromJson({}).stack, TunStack.mips);
+    for (final stack in TunStack.values) {
+      final tun = Tun.fromJson({'stack': stack.name});
+      expect(tun.stack, stack);
+      expect(roundTrip(tun.toJson, Tun.fromJson).stack, stack);
+    }
+  });
+
+  group('GeoResource JSON', () {
+    test('exposes mihomo raw config keys', () {
+      expect(GeoResource.MMDB.configKey, 'mmdb');
+      expect(GeoResource.ASN.configKey, 'asn');
+      expect(GeoResource.GEOIP.configKey, 'geoip');
+      expect(GeoResource.GEOSITE.configKey, 'geosite');
+    });
+
+    test('parses canonical GeoResource keys from config JSON', () {
+      final config = PatchClashConfig.fromJson({
+        'geox-url': {
+          'mmdb': 'https://example.com/mmdb',
+          'asn': 'https://example.com/asn.mmdb',
+          'geoip': 'https://example.com/geoip.dat',
+          'geosite': 'https://example.com/geosite.dat',
+        },
+      });
+
+      expect(config.geoXUrl, {
+        GeoResource.MMDB: 'https://example.com/mmdb',
+        GeoResource.ASN: 'https://example.com/asn.mmdb',
+        GeoResource.GEOIP: 'https://example.com/geoip.dat',
+        GeoResource.GEOSITE: 'https://example.com/geosite.dat',
+      });
+    });
+
+    test('parses hyphenated GeoResource keys from config JSON', () {
+      final config = PatchClashConfig.fromJson({
+        'geox-url': {
+          'geo-ip': 'https://example.com/legacy-geoip.dat',
+          'geo-site': 'https://example.com/legacy-geosite.dat',
+        },
+      });
+
+      expect(config.geoXUrl, {
+        GeoResource.GEOIP: 'https://example.com/legacy-geoip.dat',
+        GeoResource.GEOSITE: 'https://example.com/legacy-geosite.dat',
+      });
+    });
+
+    test('GeoXUrl defaults use GeoResource keys', () {
+      expect(defaultGeoXUrl.keys, GeoResource.values);
+    });
+
+    test('PatchClashConfig serializes geoXUrl map with lowercase keys', () {
+      final json = const PatchClashConfig(
+        geoXUrl: {GeoResource.GEOIP: 'https://example.com/geoip.dat'},
+      ).toJson();
+
+      expect(json['geox-url'], {'geoip': 'https://example.com/geoip.dat'});
+    });
+
+    test('converts geoXUrl map to raw config map', () {
+      const geoXUrl = {
+        GeoResource.MMDB: 'https://example.com/mmdb',
+        GeoResource.GEOSITE: 'https://example.com/geosite.dat',
+      };
+
+      expect(geoXUrl.raw, {
+        'mmdb': 'https://example.com/mmdb',
+        'geosite': 'https://example.com/geosite.dat',
+      });
+    });
+
+    test('PatchClashConfig parses geoXUrl map with GeoResource keys', () {
+      final config = PatchClashConfig.fromJson({
+        'geox-url': {'mmdb': 'https://example.com/mmdb'},
+      });
+
+      expect(config.geoXUrl, {GeoResource.MMDB: 'https://example.com/mmdb'});
+    });
+  });
+
+  group('AppSettingProps JSON round-trip', () {
+    test('quick settings profile visibility defaults on and persists', () {
+      expect(AppSettingProps.fromJson({}).showQuickSettingsProfileName, isTrue);
+      const props = AppSettingProps(showQuickSettingsProfileName: false);
+      expect(
+        roundTrip(
+          props.toJson,
+          AppSettingProps.fromJson,
+        ).showQuickSettingsProfileName,
+        isFalse,
+      );
+    });
+
+    test('older settings default to collapsed proxy chains', () {
+      expect(AppSettingProps.fromJson({}).collapseProxyChains, true);
+    });
+
+    test('default values survive round-trip', () {
+      const props = AppSettingProps();
+      final restored = roundTrip(
+        () => props.toJson(),
+        AppSettingProps.fromJson,
+      );
+      expect(restored.onlyStatisticsProxy, false);
+      expect(restored.autoLaunch, false);
+      expect(restored.silentLaunch, false);
+      expect(restored.autoRun, false);
+      expect(restored.openLogs, false);
+      expect(restored.closeConnections, false);
+      expect(restored.promptCloseConnections, true);
+      expect(restored.isAnimateToPage, true);
+      expect(restored.isSwipeToPage, true);
+      expect(restored.autoCheckUpdate, true);
+      expect(restored.showLabel, false);
+      expect(restored.minimizeOnExit, true);
+      expect(restored.collapseQuickSettingsPanel, true);
+      expect(restored.collapseProxyChains, true);
+      expect(restored.restoreStrategy, RestoreStrategy.compatible);
+      expect(restored.customUserAgent, '');
+      expect(restored.testUrl, defaultTestUrl);
+      expect(restored.foregroundTickerInterval, 1);
+      expect(restored.foregroundTickerIdleWhenUnfocused, true);
+      expect(restored.foregroundTickerIdleInterval, 2);
+    });
+
+    test('custom values survive round-trip', () {
+      const props = AppSettingProps(
+        locale: 'zh_CN',
+        dashboardWidgets: [
+          DashboardWidget.goroutineInfo,
+          DashboardWidget.connectionInfo,
+        ],
+        onlyStatisticsProxy: true,
+        autoLaunch: true,
+        closeConnections: false,
+        promptCloseConnections: false,
+        testUrl: 'https://custom.test',
+        customUserAgent: 'CustomUA/1.0',
+        collapseQuickSettingsPanel: false,
+        collapseProxyChains: false,
+        foregroundTickerInterval: 3,
+        foregroundTickerIdleWhenUnfocused: false,
+        foregroundTickerIdleInterval: 8,
+      );
+      final restored = roundTrip(
+        () => props.toJson(),
+        AppSettingProps.fromJson,
+      );
+      expect(restored.locale, 'zh_CN');
+      expect(restored.dashboardWidgets, [
+        DashboardWidget.goroutineInfo,
+        DashboardWidget.connectionInfo,
+      ]);
+      expect(restored.onlyStatisticsProxy, true);
+      expect(restored.autoLaunch, true);
+      expect(restored.closeConnections, false);
+      expect(restored.promptCloseConnections, false);
+      expect(restored.testUrl, 'https://custom.test');
+      expect(restored.customUserAgent, 'CustomUA/1.0');
+      expect(restored.collapseQuickSettingsPanel, false);
+      expect(restored.collapseProxyChains, false);
+      expect(restored.foregroundTickerInterval, 3);
+      expect(restored.foregroundTickerIdleWhenUnfocused, false);
+      expect(restored.foregroundTickerIdleInterval, 8);
+    });
+
+    test('safeFromJson returns default on null', () {
+      final result = AppSettingProps.safeFromJson(null);
+      expect(result, isA<AppSettingProps>());
+      expect(result.onlyStatisticsProxy, false);
+    });
+
+    test('safeFromJson returns default on invalid JSON', () {
+      final result = AppSettingProps.safeFromJson({'invalid': 'data'});
+      expect(result, isA<AppSettingProps>());
+    });
+  });
+
+  group('WindowProps JSON round-trip', () {
+    test('default values', () {
+      const props = WindowProps();
+      expect(props.width, 0);
+      expect(props.height, 0);
+      expect(props.top, null);
+      expect(props.left, null);
+    });
+
+    test('fromJson handles null', () {
+      final props = WindowProps.fromJson(null);
+      expect(props.width, 0);
+    });
+
+    test('size extension defaults to 680x580 when empty', () {
+      const props = WindowProps();
+      expect(props.size.width, 680);
+      expect(props.size.height, 580);
+    });
+
+    test('size extension uses actual values', () {
+      const props = WindowProps(width: 800, height: 600);
+      expect(props.size.width, 800);
+      expect(props.size.height, 600);
+    });
+
+    test('round-trip with values', () {
+      const props = WindowProps(width: 1024, height: 768, top: 100, left: 200);
+      final restored = roundTrip(() => props.toJson(), WindowProps.fromJson);
+      expect(restored.width, 1024);
+      expect(restored.height, 768);
+      expect(restored.top, 100);
+      expect(restored.left, 200);
+    });
+  });
+
+  group('VpnProps JSON round-trip', () {
+    test('default values', () {
+      const props = VpnProps();
+      expect(props.enable, true);
+      expect(props.systemProxy, true);
+      expect(props.ipv6, false);
+      expect(props.allowBypass, true);
+      expect(props.dnsHijacking, true);
+      expect(props.suspendSupport, true);
+      expect(props.networkSpeedNotification, false);
+      expect(props.includeAllNetworks, false);
+      expect(props.excludeLocalNetworks, true);
+      expect(props.excludeAPNs, true);
+      expect(props.excludeCellularServices, true);
+      expect(props.enforceRoutes, false);
+      expect(props.excludeDeviceCommunication, true);
+      expect(props.accessControlProps.enable, false);
+    });
+
+    test('fromJson handles null', () {
+      final props = VpnProps.fromJson(null);
+      expect(props.enable, true);
+    });
+
+    test('round-trip with custom values', () {
+      const accessControl = AccessControlProps(
+        enable: true,
+        mode: AccessControlMode.acceptSelected,
+      );
+      const props = VpnProps(
+        enable: false,
+        systemProxy: false,
+        ipv6: true,
+        suspendSupport: false,
+        networkSpeedNotification: true,
+        includeAllNetworks: true,
+        excludeLocalNetworks: false,
+        enforceRoutes: true,
+        accessControlProps: accessControl,
+      );
+      final restored = roundTrip(() => props.toJson(), VpnProps.fromJson);
+      expect(restored.enable, false);
+      expect(restored.systemProxy, false);
+      expect(restored.ipv6, true);
+      expect(restored.suspendSupport, false);
+      expect(restored.networkSpeedNotification, true);
+      expect(restored.includeAllNetworks, true);
+      expect(restored.excludeLocalNetworks, false);
+      expect(restored.enforceRoutes, true);
+    });
+  });
+
+  group('NetworkProps JSON round-trip', () {
+    test('default values', () {
+      const props = NetworkProps();
+      expect(props.systemProxy, true);
+      expect(props.bypassDomain, defaultBypassDomain);
+      expect(props.bypassDomain, ['localhost', '*.local', '*.lan']);
+      expect(props.routeMode, RouteMode.config);
+      expect(props.appendSystemDns, false);
+    });
+
+    test('round-trip with custom values', () {
+      const props = NetworkProps(
+        systemProxy: false,
+        bypassDomain: ['example.com'],
+        routeMode: RouteMode.bypassPrivate,
+      );
+      final restored = roundTrip(() => props.toJson(), NetworkProps.fromJson);
+      expect(restored.systemProxy, false);
+      expect(restored.bypassDomain, ['example.com']);
+      expect(restored.routeMode, RouteMode.bypassPrivate);
+    });
+  });
+
+  group('PatchClashConfig JSON round-trip', () {
+    test('defaults match Clash patch defaults', () {
+      const config = PatchClashConfig();
+
+      expect(config.mixedPort, defaultMixedPort);
+      expect(config.allowLan, false);
+      expect(config.mode, Mode.rule);
+      expect(config.externalController, isEmpty);
+      expect(config.secret, isEmpty);
+      expect(config.geodataLoader, GeodataLoader.memconservative);
+      expect(config.geositeMatcher, GeositeMatcher.succinct);
+      expect(config.tun.mtu, defaultTunMtu);
+      expect(config.tun.dnsHijack, isEmpty);
+      expect(config.tun.strictRoute, false);
+      expect(config.tun.disableIcmpForwarding, false);
+      expect(config.tun.endpointIndependentNat, false);
+      expect(config.interfaceNameMode, InterfaceNameMode.clear);
+      expect(config.interfaceName, '');
+      expect(config.dns.fakeIpFilter, ['+.local', '+.lan']);
+      expect(config.dns.nameserverPolicy, {
+        'geosite:cn': 'https://doh.pub/dns-query',
+      });
+    });
+
+    test('custom values survive round-trip', () {
+      const config = PatchClashConfig(
+        mixedPort: 7890,
+        allowLan: true,
+        mode: Mode.rule,
+        logLevel: LogLevel.debug,
+        externalController: '127.0.0.1:9090',
+        secret: 'controller-secret',
+        geodataLoader: GeodataLoader.memconservative,
+        geositeMatcher: GeositeMatcher.mph,
+        tun: Tun(
+          mtu: 1500,
+          strictRoute: true,
+          disableIcmpForwarding: true,
+          endpointIndependentNat: true,
+        ),
+        interfaceNameMode: InterfaceNameMode.custom,
+        interfaceName: 'eth0',
+      );
+
+      final restored = roundTrip(
+        () => config.toJson(),
+        PatchClashConfig.fromJson,
+      );
+
+      expect(restored.mixedPort, 7890);
+      expect(restored.allowLan, true);
+      expect(restored.mode, Mode.rule);
+      expect(restored.logLevel, LogLevel.debug);
+      expect(restored.externalController, '127.0.0.1:9090');
+      expect(restored.secret, 'controller-secret');
+      expect(restored.geodataLoader, GeodataLoader.memconservative);
+      expect(restored.geositeMatcher, GeositeMatcher.mph);
+      expect(restored.tun.mtu, 1500);
+      expect(restored.tun.strictRoute, true);
+      expect(restored.tun.disableIcmpForwarding, true);
+      expect(restored.tun.endpointIndependentNat, true);
+      expect(restored.interfaceNameMode, InterfaceNameMode.custom);
+      expect(restored.interfaceName, 'eth0');
+    });
+
+    test('unknown interface-name-mode falls back to clear', () {
+      final restored = PatchClashConfig.fromJson({
+        'interface-name-mode': 'unknown',
+      });
+
+      expect(restored.interfaceNameMode, InterfaceNameMode.clear);
+    });
+
+    test('proxy nameserver policy survives round-trip', () {
+      const config = PatchClashConfig(
+        dns: Dns(
+          proxyServerNameserverPolicy: {
+            'geosite:cn': 'https://doh.pub/dns-query',
+          },
+        ),
+      );
+
+      final restored = roundTrip(
+        () => config.toJson(),
+        PatchClashConfig.fromJson,
+      );
+
+      expect(restored.dns.proxyServerNameserverPolicy, {
+        'geosite:cn': 'https://doh.pub/dns-query',
+      });
+    });
+  });
+
+  group('ProxiesStyleProps JSON round-trip', () {
+    test('default values', () {
+      const props = ProxiesStyleProps();
+      expect(props.type, ProxiesType.tab);
+      expect(props.sortType, ProxiesSortType.none);
+      expect(props.layout, ProxiesLayout.standard);
+      expect(props.listHeaderStyle, ProxiesListHeaderStyle.loose);
+      expect(props.iconSource, ProxiesIconSource.standard);
+      expect(props.cardType, ProxyCardType.standard);
+      expect(props.hideUnavailable, false);
+      expect(props.showHiddenGroups, false);
+    });
+
+    test('round-trip with custom values', () {
+      const props = ProxiesStyleProps(
+        type: ProxiesType.list,
+        sortType: ProxiesSortType.delay,
+        listHeaderStyle: ProxiesListHeaderStyle.tight,
+        iconSource: ProxiesIconSource.emoji,
+        hideUnavailable: true,
+        showHiddenGroups: true,
+      );
+      final restored = roundTrip(
+        () => props.toJson(),
+        ProxiesStyleProps.fromJson,
+      );
+      expect(restored.type, ProxiesType.list);
+      expect(restored.sortType, ProxiesSortType.delay);
+      expect(restored.listHeaderStyle, ProxiesListHeaderStyle.tight);
+      expect(restored.iconSource, ProxiesIconSource.emoji);
+      expect(restored.hideUnavailable, true);
+      expect(restored.showHiddenGroups, true);
+    });
+  });
+
+  group('ThemeProps JSON round-trip', () {
+    test('default values', () {
+      const props = ThemeProps();
+      expect(props.primaryColor, null);
+      expect(props.primaryColors, defaultPrimaryColors);
+      expect(props.themeMode, ThemeMode.system);
+      expect(props.pureBlack, false);
+      expect(props.textScale.scale, 1.0);
+    });
+
+    test('safeFromJson returns default on null', () {
+      final result = ThemeProps.safeFromJson(null);
+      expect(result.themeMode, ThemeMode.system);
+    });
+
+    test('round-trip with custom values', () {
+      const props = ThemeProps(
+        primaryColor: 0xFF123456,
+        themeMode: ThemeMode.light,
+        pureBlack: true,
+        textScale: TextScale(enable: true, scale: 1.5),
+      );
+      final restored = roundTrip(() => props.toJson(), ThemeProps.fromJson);
+      expect(restored.primaryColor, 0xFF123456);
+      expect(restored.themeMode, ThemeMode.light);
+      expect(restored.pureBlack, true);
+      expect(restored.textScale.scale, 1.5);
+    });
+  });
+
+  group('AccessControlProps', () {
+    test('currentList returns acceptList in acceptSelected mode', () {
+      const props = AccessControlProps(
+        enable: true,
+        mode: AccessControlMode.acceptSelected,
+        acceptList: ['app1', 'app2'],
+        rejectList: ['app3'],
+      );
+      expect(props.currentList, ['app1', 'app2']);
+    });
+
+    test('currentList returns rejectList in rejectSelected mode', () {
+      const props = AccessControlProps(
+        enable: true,
+        mode: AccessControlMode.rejectSelected,
+        acceptList: ['app1'],
+        rejectList: ['app3', 'app4'],
+      );
+      expect(props.currentList, ['app3', 'app4']);
+    });
+  });
+
+  group('unknown enum compatibility', () {
+    test('app settings enums fall back field by field', () {
+      expect(
+        AppSettingProps.fromJson({'restoreStrategy': 'future'}).restoreStrategy,
+        RestoreStrategy.compatible,
+      );
+      final access = AccessControlProps.fromJson({
+        'mode': 'future',
+        'sort': 'future',
+      });
+      expect(access.mode, AccessControlMode.rejectSelected);
+      expect(access.sort, AccessSortType.none);
+      expect(
+        NetworkProps.fromJson({'routeMode': 'future'}).routeMode,
+        RouteMode.config,
+      );
+    });
+
+    test('proxy style enums fall back field by field', () {
+      final props = ProxiesStyleProps.fromJson({
+        'type': 'future',
+        'sortType': 'future',
+        'layout': 'future',
+        'listHeaderStyle': 'future',
+        'iconStyle': 'future',
+        'iconSource': 'future',
+        'cardType': 'future',
+      });
+
+      expect(props.type, ProxiesType.tab);
+      expect(props.sortType, ProxiesSortType.none);
+      expect(props.layout, ProxiesLayout.standard);
+      expect(props.listHeaderStyle, ProxiesListHeaderStyle.loose);
+      expect(props.iconStyle, ProxiesIconStyle.standard);
+      expect(props.iconSource, ProxiesIconSource.standard);
+      expect(props.cardType, ProxyCardType.standard);
+    });
+
+    test('theme enums fall back field by field', () {
+      final props = ThemeProps.fromJson({
+        'themeMode': 'future',
+        'schemeVariant': 'future',
+      });
+
+      expect(props.themeMode, ThemeMode.system);
+      expect(props.schemeVariant, DynamicSchemeVariant.content);
+    });
+
+    test('Clash patch enums fall back field by field', () {
+      final patch = PatchClashConfig.fromJson({
+        'mode': 'future',
+        'log-level': 'future',
+        'find-process-mode': 'future',
+        'interface-name-mode': 'future',
+        'geodata-loader': 'future',
+        'geosite-matcher': 'future',
+        'tun': {'stack': 'future', 'congestion-controller': 'future'},
+        'dns': {'enhanced-mode': 'future'},
+      });
+
+      expect(patch.mode, Mode.rule);
+      expect(patch.logLevel, LogLevel.error);
+      expect(patch.findProcessMode, FindProcessMode.always);
+      expect(patch.interfaceNameMode, InterfaceNameMode.clear);
+      expect(patch.geodataLoader, GeodataLoader.memconservative);
+      expect(patch.geositeMatcher, GeositeMatcher.succinct);
+      expect(patch.tun.stack, TunStack.mips);
+      expect(patch.tun.congestionController, TunCongestionController.cubic);
+      expect(patch.dns.enhancedMode, DnsMode.fakeIp);
+    });
+
+    test('profile and rule enums fall back field by field', () {
+      final group = ProxyGroup.fromJson({
+        'id': 1,
+        'name': 'group',
+        'type': 'future',
+      });
+      final rule = Rule.fromJson({'ruleAction': 'future'});
+
+      expect(group.type, GroupType.Selector);
+      expect(rule.ruleAction, RuleAction.DOMAIN);
+    });
+  });
+
+  group('Config composite serialization', () {
+    test(
+      'legacy DAV settings keep their directory and custom directories round-trip',
+      () {
+        final legacy = DAVProps.fromJson({
+          'uri': 'https://dav.example.com',
+          'user': '',
+          'fileName': 'backup.zip',
+        });
+        expect(legacy.directory, defaultDavDirectory);
+        expect(legacy.fileName, 'backup.zip');
+        final custom = legacy.copyWith(directory: '/backups/nightly');
+        expect(DAVProps.fromJson(custom.toJson()), custom);
+        final root = legacy.copyWith(directory: '/');
+        expect(DAVProps.fromJson(root.toJson()).directory, '/');
+      },
+    );
+
+    test('DAVProps obfuscates and restores its password', () {
+      const props = DAVProps(
+        uri: 'https://dav.example.com',
+        user: 'user',
+        password: '密碼-🔐',
+      );
+
+      final json = props.toJson();
+
+      expect(json['password'], startsWith('v1.'));
+      expect(json['password'], isNot(contains('密碼')));
+      expect(DAVProps.fromJson(json), props);
+      expect(props.toString(), isNot(contains('密碼')));
+      expect(props.toString(), contains('password: ***'));
+    });
+
+    test('DAVProps accepts and rewrites a legacy plain-text password', () {
+      final props = DAVProps.fromJson({
+        'uri': 'https://dav.example.com',
+        'user': 'user',
+        'password': 'legacy-secret',
+        'fileName': 'backup.zip',
+      });
+
+      expect(props.password, 'legacy-secret');
+      expect(props.toJson()['password'], startsWith('v1.'));
+      expect(props.toJson()['password'], isNot(contains('legacy-secret')));
+    });
+
+    test('DAVProps rejects a damaged obfuscated password', () {
+      final props = DAVProps.fromJson({
+        'uri': 'https://dav.example.com',
+        'user': 'user',
+        'password': 'v1.invalid.invalid',
+        'fileName': 'backup.zip',
+      });
+
+      expect(props.password, isEmpty);
+    });
+
+    test('default Config round-trip', () {
+      const config = Config(themeProps: ThemeProps());
+      final restored = roundTrip(() => config.toJson(), Config.fromJson);
+      expect(restored.currentProfileId, null);
+      expect(restored.overrideDns, false);
+      expect(restored.overrideNtp, false);
+      expect(restored.networkProps.systemProxy, true);
+      expect(restored.vpnProps.enable, true);
+      expect(restored.hotKeyActions, isEmpty);
+      expect(restored.alwaysOn, false);
+    });
+
+    test('realFromJson handles null', () {
+      final result = Config.realFromJson(null);
+      expect(result.appSettingProps.onlyStatisticsProxy, false);
+    });
+
+    test('full config round-trip', () {
+      const config = Config(
+        currentProfileId: 42,
+        overrideDns: true,
+        overrideNtp: true,
+        hotKeyActions: [],
+        appSettingProps: AppSettingProps(locale: 'en', autoLaunch: true),
+        networkProps: NetworkProps(systemProxy: false),
+        vpnProps: VpnProps(enable: false),
+        alwaysOn: true,
+        themeProps: ThemeProps(
+          primaryColor: 0xFF00FF00,
+          themeMode: ThemeMode.system,
+        ),
+        windowProps: WindowProps(width: 1280, height: 720),
+      );
+      final restored = roundTrip(() => config.toJson(), Config.fromJson);
+      expect(restored.currentProfileId, 42);
+      expect(restored.overrideDns, true);
+      expect(restored.overrideNtp, true);
+      expect(restored.appSettingProps.locale, 'en');
+      expect(restored.appSettingProps.autoLaunch, true);
+      expect(restored.networkProps.systemProxy, false);
+      expect(restored.vpnProps.enable, false);
+      expect(restored.alwaysOn, true);
+      expect(restored.windowProps.width, 1280);
+      expect(restored.windowProps.height, 720);
+    });
+  });
+}

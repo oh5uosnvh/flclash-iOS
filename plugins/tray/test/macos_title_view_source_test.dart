@@ -1,0 +1,180 @@
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+
+File _resolveSource(String relativePath) {
+  final direct = File(relativePath);
+  if (direct.existsSync()) {
+    return direct;
+  }
+  final inPlugin = File('plugins/tray/$relativePath');
+  if (inPlugin.existsSync()) {
+    return inPlugin;
+  }
+  return direct;
+}
+
+void main() {
+  late String titleViewSource;
+  late String statusItemSource;
+  late String menuSource;
+  late String pluginSource;
+
+  setUpAll(() {
+    titleViewSource = _resolveSource(
+      'macos/tray/Sources/tray/TrayTitleView.swift',
+    ).readAsStringSync().replaceAll('\r\n', '\n');
+    statusItemSource = _resolveSource(
+      'macos/tray/Sources/tray/TrayStatusItem.swift',
+    ).readAsStringSync().replaceAll('\r\n', '\n');
+    menuSource = _resolveSource(
+      'macos/tray/Sources/tray/TrayMenu.swift',
+    ).readAsStringSync().replaceAll('\r\n', '\n');
+    pluginSource = _resolveSource(
+      'macos/tray/Sources/tray/TrayPlugin.swift',
+    ).readAsStringSync().replaceAll('\r\n', '\n');
+  });
+
+  test('macOS tray title is self-drawn instead of using NSTextField', () {
+    expect(titleViewSource, contains('final class TrayTitleView: NSView'));
+    expect(titleViewSource, isNot(contains('NSTextField')));
+  });
+
+  test('macOS tray title text is drawn centered', () {
+    expect(titleViewSource, contains('override var isFlipped: Bool'));
+    expect(titleViewSource, contains('.alignment = .right'));
+    expect(
+      titleViewSource,
+      contains('(bounds.height - textBounds.height) / 2'),
+    );
+  });
+
+  test('macOS tray title widens instead of clipping long speeds', () {
+    expect(titleViewSource, contains('invalidateIntrinsicContentSize'));
+    expect(
+      titleViewSource,
+      contains('max(TrayTitleView.width, ceil(measure(text).width))'),
+    );
+    expect(
+      statusItemSource,
+      contains('greaterThanOrEqualToConstant: TrayTitleView.width'),
+    );
+  });
+
+  test('macOS status item reports a missing status button', () {
+    expect(statusItemSource, contains('init?('));
+    expect(
+      statusItemSource,
+      contains('''
+        guard let button = statusItem.button else {
+            NSStatusBar.system.removeStatusItem(statusItem)
+            return nil
+        }'''),
+    );
+  });
+
+  test('macOS status item only refits the button on visible change', () {
+    expect(statusItemSource, contains('if contentView.setImage(image'));
+    expect(statusItemSource, contains('if contentView.setTitle(title)'));
+    expect(statusItemSource, contains('wasHidden != imageView.isHidden'));
+  });
+
+  test('macOS tray icon position reorders image and title views', () {
+    expect(statusItemSource, contains('applyPosition'));
+    expect(statusItemSource, contains('insertArrangedSubview'));
+    expect(statusItemSource, contains('position == "trailing"'));
+  });
+
+  test('macOS tray uses a tighter leading margin with a title', () {
+    expect(statusItemSource, contains('title.isEmpty ? 8 : 4'));
+    expect(statusItemSource, contains('leadingConstraint?.constant'));
+    expect(
+      statusItemSource,
+      contains('return titleView.setTitle(title) || marginChanged'),
+    );
+  });
+
+  test('macOS renders and updates keyed live menu items', () {
+    expect(menuSource, contains('final class TrayMenuItemView: NSView'));
+    expect(menuSource, contains('entry["usesCustomView"]'));
+    expect(menuSource, contains('func updateMenuItems'));
+    expect(pluginSource, contains('case "updateMenuItems"'));
+    expect(pluginSource, isNot(contains('case "updateMenuItem":')));
+    expect(menuSource, contains('arguments["sublabel"] as? String'));
+    expect(menuSource, contains('arguments["checked"] as? Bool'));
+    expect(menuSource, contains('updateCustomViewWidths(items.compactMap'));
+  });
+
+  test('macOS custom menu items use native selection and state artwork', () {
+    expect(
+      menuSource,
+      contains('NSVisualEffectView.Material(rawValue: 36) ?? .selection'),
+    );
+    expect(menuSource, contains('view.blendingMode = .behindWindow'));
+    expect(menuSource, contains('view.isEmphasized = true'));
+    expect(menuSource, contains('override var allowsVibrancy: Bool'));
+    expect(menuSource, contains('? 7'));
+    expect(menuSource, contains(': 4'));
+    expect(menuSource, contains('NSImage.menuOnStateTemplateName'));
+    expect(menuSource, contains('systemSymbolName: "chevron.right"'));
+    expect(menuSource, contains('NSFont.menuFont(ofSize: 0).pointSize'));
+    expect(menuSource, contains('weight: .bold'));
+    expect(menuSource, contains('scale: .small'));
+    expect(menuSource, contains('static let stateImageHeight: CGFloat = 11'));
+    expect(menuSource, contains('static let stateImageLeading: CGFloat = 12'));
+    expect(
+      menuSource,
+      contains('static let stateImageTitleSpacing: CGFloat = 3'),
+    );
+    expect(
+      menuSource,
+      contains('let stateImageSize = checkmarkView.image?.size'),
+    );
+    expect(menuSource, contains('static let trailing: CGFloat = 16'));
+    expect(
+      menuSource,
+      contains('static let submenuIndicatorWidth: CGFloat = 9'),
+    );
+    expect(menuSource, contains('private var reservesSubmenuColumn = false'));
+    expect(menuSource, contains('autoresizingMask = [.width]'));
+    expect(menuSource, contains('\$0.containsSubmenuIndicator'));
+    expect(
+      menuSource,
+      contains('view.setReservesSubmenuColumn(reservesSubmenuColumn)'),
+    );
+    expect(
+      menuSource,
+      isNot(contains('NSColor.selectedContentBackgroundColor')),
+    );
+    expect(menuSource, isNot(contains('let text = "✓"')));
+    expect(menuSource, isNot(contains('let text = "›"')));
+  });
+
+  test('macOS custom menu highlight state is owned by each menu', () {
+    expect(
+      menuSource,
+      contains('private weak var hoveredCustomView: TrayMenuItemView?'),
+    );
+    expect(menuSource, contains('previousView?.setPointerInside(false)'));
+    expect(menuSource, contains('hoveredCustomView !== view'));
+    expect(menuSource, contains('hoveredCustomView === view'));
+    expect(menuSource, contains('NSMenu.didBeginTrackingNotification'));
+    expect(menuSource, contains('NSMenu.didEndTrackingNotification'));
+    expect(
+      menuSource,
+      isNot(contains('pointerInside = true\n        refresh()')),
+    );
+  });
+
+  test('macOS reuses a compatible menu even while it is closed', () {
+    expect(pluginSource, contains('item.statusItem.menu === \$0'));
+    expect(pluginSource, contains('if let menu, menu.update(items: items)'));
+    expect(menuSource, contains('nativeItem.trayType == type'));
+    expect(menuSource, contains('submenu.isCompatible(with: children)'));
+  });
+
+  test('macOS keeps delay tests inside the tracked menu', () {
+    expect(menuSource, contains('if !keepsMenuOpen'));
+    expect(menuSource, contains('menuItem.menu?.cancelTracking()'));
+  });
+}

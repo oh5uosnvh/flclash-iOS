@@ -1,0 +1,448 @@
+import 'dart:io';
+
+import 'package:archive/archive.dart';
+import 'package:path/path.dart' as p;
+import 'package:test/test.dart';
+import 'package:xml/xml.dart';
+
+import '../setup.dart' as setup;
+import '../tool/geodata.dart' as geodata;
+
+void main() {
+  group('setup.dart', () {
+    test('adds a portable config directory to zip packages', () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'flclash_setup_portable_test_',
+      );
+      addTearDown(() async {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+      final zipFile = File(p.join(tempDir.path, 'FlClash.zip'));
+      final archive = Archive()
+        ..addFile(ArchiveFile.string('FlClash', 'executable'));
+      await zipFile.writeAsBytes(ZipEncoder().encode(archive));
+
+      await setup.injectPortableConfigDirIntoZip(zipFile.path);
+
+      final packaged = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
+      expect(packaged.find('FlClash'), isNotNull);
+      expect(packaged.find('config/'), isNotNull);
+    });
+
+    test('parses -v as verbose mode', () {
+      final results = setup.createSetupArgParser().parse(['android', '-v']);
+
+      expect(results['verbose'], isTrue);
+      expect(results.rest, ['android']);
+    });
+
+    test('accepts dev application environment', () {
+      final results = setup.createSetupArgParser().parse([
+        'android',
+        '--env',
+        'dev',
+      ]);
+
+      expect(results['env'], 'dev');
+    });
+
+    test('Flutter build environment does not depend on Core SHA256', () {
+      expect(setup.createBuildEnvironment('dev'), {'APP_ENV': 'dev'});
+    });
+
+    test('Flutter build environment names the package architecture', () {
+      expect(setup.createBuildEnvironment('stable', arch: 'x64-v3'), {
+        'APP_ENV': 'stable',
+        'APP_ARCH': 'x64-v3',
+      });
+    });
+
+    test('parses iOS bundle identifier override', () {
+      final results = setup.createSetupArgParser().parse([
+        'ios',
+        '--ios-bundle-id',
+        'com.example.flclash',
+      ]);
+
+      expect(results['ios-bundle-id'], 'com.example.flclash');
+      expect(results.rest, ['ios']);
+    });
+
+    test('parses unsigned iOS packaging mode', () {
+      final results = setup.createSetupArgParser().parse([
+        'ios',
+        '--no-codesign',
+      ]);
+
+      expect(results['no-codesign'], isTrue);
+      expect(results.rest, ['ios']);
+    });
+
+    test('parses dependency installation opt-out', () {
+      final results = setup.createSetupArgParser().parse([
+        'linux',
+        '--skip-dependencies',
+      ]);
+
+      expect(results['skip-dependencies'], isTrue);
+      expect(results.rest, ['linux']);
+    });
+
+    test('derives no-sign signing targets from their names', () {
+      final targets = setup.createIOSNoSignSigningTargets(
+        rootDir: p.join('workspace', 'flclash'),
+        appBundlePath: p.join('build', 'Runner.app'),
+        appBundleId: 'com.example.flclash',
+      );
+
+      expect(targets, [
+        (
+          bundle: p.join('build', 'Runner.app', 'PlugIns', 'NECore.appex'),
+          bundleIdentifier: 'com.example.flclash.NECore',
+          entitlements: p.join(
+            'workspace',
+            'flclash',
+            'ios',
+            'NECore',
+            'NECore.entitlements',
+          ),
+        ),
+        (
+          bundle: p.join('build', 'Runner.app', 'PlugIns', 'Widget.appex'),
+          bundleIdentifier: 'com.example.flclash.Widget',
+          entitlements: p.join(
+            'workspace',
+            'flclash',
+            'ios',
+            'Widget',
+            'Widget.entitlements',
+          ),
+        ),
+        (
+          bundle: p.join('build', 'Runner.app'),
+          bundleIdentifier: 'com.example.flclash',
+          entitlements: p.join(
+            'workspace',
+            'flclash',
+            'ios',
+            'Runner',
+            'Runner.entitlements',
+          ),
+        ),
+      ]);
+    });
+
+    test('creates matching TrollStore application identifiers', () {
+      const source = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>group.\$(APP_BUNDLE_ID)</string>
+  </array>
+</dict>
+</plist>
+''';
+
+      final content = setup.createIOSNoSignEntitlements(
+        source: source,
+        appBundleId: 'com.example.flclash',
+        bundleIdentifier: 'com.example.flclash.NECore',
+        teamIdentifier: 'ABCDE12345',
+      );
+      final document = XmlDocument.parse(content);
+      final elements = document.rootElement
+          .getElement('dict')!
+          .childElements
+          .toList();
+      final values = <String, String>{};
+      for (var index = 0; index + 1 < elements.length; index++) {
+        if (elements[index].name.local == 'key') {
+          values[elements[index].innerText] = elements[index + 1].innerText
+              .trim();
+        }
+      }
+
+      expect(
+        values['application-identifier'],
+        'ABCDE12345.com.example.flclash.NECore',
+      );
+      expect(values['com.apple.developer.team-identifier'], 'ABCDE12345');
+      expect(
+        values['com.apple.security.application-groups'],
+        'group.com.example.flclash',
+      );
+    });
+
+    test('falls back to unknown when replacing identity entitlements', () {
+      const source = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>application-identifier</key>
+  <string>OLD.identifier</string>
+  <key>com.apple.developer.team-identifier</key>
+  <string>OLDTEAM</string>
+</dict>
+</plist>
+''';
+
+      final content = setup.createIOSNoSignEntitlements(
+        source: source,
+        appBundleId: 'com.example.flclash',
+        bundleIdentifier: 'com.example.flclash',
+      );
+
+      expect(
+        RegExp('<key>application-identifier</key>').allMatches(content),
+        hasLength(1),
+      );
+      expect(content, contains('UNKNOWN000.com.example.flclash'));
+      expect(
+        content,
+        contains(
+          '<key>com.apple.developer.team-identifier</key>\n'
+          '\t\t<string>UNKNOWN000</string>',
+        ),
+      );
+      expect(content, isNot(contains('OLD.identifier')));
+      expect(content, isNot(contains('OLDTEAM')));
+    });
+
+    test('writes generated iOS bundle config', () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'flclash_setup_test_',
+      );
+      addTearDown(() async {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      await setup.writeIOSGeneratedBundleConfig(
+        tempDir.path,
+        'com.example.flclash',
+        'ABCDE12345',
+      );
+
+      final configFile = File(
+        p.join(
+          tempDir.path,
+          'ios',
+          'Flutter',
+          'GeneratedBundleConfig.xcconfig',
+        ),
+      );
+      final content = await configFile.readAsString();
+      expect(content, contains('APP_BUNDLE_ID = com.example.flclash'));
+      expect(content, contains('DEVELOPMENT_TEAM = ABCDE12345'));
+    });
+
+    test('downloads geodata into the Flutter asset directory', () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'flclash_geodata_test_',
+      );
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        request.response.add([1, 2, 3, 4]);
+        await request.response.close();
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      await geodata.ensureGeoData(
+        rootDir: tempDir.path,
+        sources: {
+          'GeoIP.metadb':
+              'http://${server.address.address}:${server.port}/GeoIP.metadb',
+        },
+      );
+
+      final file = File(p.join(tempDir.path, 'assets', 'data', 'GeoIP.metadb'));
+      expect(await file.readAsBytes(), [1, 2, 3, 4]);
+    });
+
+    test('omits verbose from flutter build args by default', () {
+      final args = setup.createFlutterBuildArgs(
+        platform: 'android',
+        verbose: false,
+      );
+
+      expect(args, ['dart-define-from-file=env.json', 'split-per-abi']);
+    });
+
+    test('adds verbose to flutter build args with -v', () {
+      final args = setup.createFlutterBuildArgs(
+        platform: 'android',
+        verbose: true,
+      );
+
+      expect(args, [
+        'verbose',
+        'dart-define-from-file=env.json',
+        'split-per-abi',
+      ]);
+    });
+
+    test('refuses to package while a native build hook is skipped', () {
+      const pubspec = '''
+hooks:
+  user_defines:
+    setup:
+      build_assets: false
+    rust_api:
+      build_assets: true
+''';
+
+      expect(setup.packagesNotBuildingAssets(pubspec), ['setup']);
+      expect(setup.packagesNotBuildingAssets('name: x\n'), isEmpty);
+    });
+
+    test('passes GOAMD64 through the setup user define', () {
+      const pubspec = '''
+hooks:
+  user_defines:
+    setup:
+      build_assets: true
+    rust_api:
+      build_assets: true
+''';
+
+      final patched = setup.pubspecWithGoAmd64(pubspec, 'v3');
+
+      expect(patched, contains('goamd64: v3'));
+      expect(patched, contains('build_assets: true'));
+      expect(patched, isNot(contains('goamd64: v1')));
+      expect(
+        () => setup.pubspecWithGoAmd64(patched, 'v1'),
+        throwsArgumentError,
+      );
+
+      final crlf = setup.pubspecWithGoAmd64(
+        pubspec.replaceAll('\n', '\r\n'),
+        'v3',
+      );
+      expect(crlf, contains('goamd64: v3'));
+      expect(crlf.replaceAll('\r\n', ''), isNot(contains('\n')));
+    });
+
+    test('names x64 microarchitecture packages without renaming v1', () {
+      expect(setup.parsePackageArchitecture('x64').name, 'x64');
+      expect(setup.parsePackageArchitecture('x64').goamd64, isNull);
+      expect(setup.parsePackageArchitecture('x64-v1').name, 'x64');
+      expect(setup.parsePackageArchitecture('x64-v1').goamd64, isNull);
+      expect(setup.parsePackageArchitecture('x64-v3').name, 'x64-v3');
+      expect(setup.parsePackageArchitecture('x64-v3').goamd64, 'v3');
+      expect(setup.parsePackageArchitecture('x64-v3').flutterArch, 'x64');
+      expect(
+        () => setup.parsePackageArchitecture('x64-v4'),
+        throwsArgumentError,
+      );
+    });
+
+    test('accepts desktop microarchitecture builds on a matching host', () {
+      final linux = setup.resolvePackageArchitecture(
+        platform: 'linux',
+        requested: 'x64-v2',
+        hostArch: 'x64',
+      );
+      expect(linux.name, 'x64-v2');
+      expect(linux.goamd64, 'v2');
+
+      final macos = setup.resolvePackageArchitecture(
+        platform: 'macos',
+        requested: 'x64-v3',
+        hostArch: 'arm64',
+      );
+      expect(macos.flutterArch, 'x64');
+      expect(macos.goamd64, 'v3');
+
+      expect(
+        () => setup.resolvePackageArchitecture(
+          platform: 'linux',
+          requested: 'x64-v3',
+          hostArch: 'arm64',
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => setup.resolvePackageArchitecture(
+          platform: 'android',
+          requested: 'x64-v3',
+          hostArch: 'x64',
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test('leaves the baseline package on the hook default', () {
+      final baseline = setup.resolvePackageArchitecture(
+        platform: 'linux',
+        requested: null,
+        hostArch: 'x64',
+      );
+
+      expect(baseline.name, 'x64');
+      expect(baseline.goamd64, isNull);
+    });
+
+    test('pins all macOS targets to the requested package architecture', () {
+      expect(
+        setup.createMacosBuildConfig('x64'),
+        'ARCHS = x86_64\nEXCLUDED_ARCHS = arm64\n',
+      );
+      expect(
+        setup.createMacosBuildConfig('arm64'),
+        'ARCHS = arm64\nEXCLUDED_ARCHS = x86_64\n',
+      );
+      expect(() => setup.createMacosBuildConfig('arm'), throwsArgumentError);
+    });
+
+    test('packages every Linux format on every architecture', () {
+      expect(
+        setup.createPackageTargets('linux', null),
+        'deb,rpm,pacman,appimage,zip',
+      );
+      expect(setup.createPackageTargets('linux', 'deb'), 'deb');
+      expect(setup.createPackageTargets('macos', null), 'dmg');
+    });
+
+    test('downloads the appimagetool build matching the host', () {
+      expect(setup.appImageToolArch('arm64'), 'aarch64');
+      expect(setup.appImageToolArch('x64'), 'x86_64');
+    });
+
+    test('adds default iOS export method to flutter build args', () {
+      final args = setup.createFlutterBuildArgs(
+        platform: 'ios',
+        verbose: false,
+      );
+
+      expect(args, [
+        'dart-define-from-file=env.json',
+        'export-method=app-store',
+      ]);
+    });
+
+    test('uses iOS export options plist when provided', () {
+      final args = setup.createFlutterBuildArgs(
+        platform: 'ios',
+        verbose: false,
+        iosExportOptionsPlist: 'ios/ExportOptions.plist',
+      );
+
+      expect(args, [
+        'dart-define-from-file=env.json',
+        'export-options-plist=ios/ExportOptions.plist',
+      ]);
+    });
+  });
+}

@@ -1,0 +1,50 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of '../state.dart';
+
+// **************************************************************************
+// JsonSerializableGenerator
+// **************************************************************************
+
+_SharedState _$SharedStateFromJson(Map<String, dynamic> json) => _SharedState(
+  setupParams: json['setupParams'] == null
+      ? null
+      : SetupParams.fromJson(json['setupParams'] as Map<String, dynamic>),
+  vpnOptions: json['vpnOptions'] == null
+      ? null
+      : VpnOptions.fromJson(json['vpnOptions'] as Map<String, dynamic>),
+  stopTip: json['stopTip'] as String,
+  startTip: json['startTip'] as String,
+  currentProfileName: json['currentProfileName'] as String,
+  stopText: json['stopText'] as String,
+  onlyStatisticsProxy: json['onlyStatisticsProxy'] as bool,
+  showStopAction: json['showStopAction'] as bool? ?? true,
+  networkSpeedNotification: json['networkSpeedNotification'] as bool? ?? false,
+  collapseQuickSettingsPanel:
+      json['collapseQuickSettingsPanel'] as bool? ?? true,
+  showQuickSettingsProfileName:
+      json['showQuickSettingsProfileName'] as bool? ?? true,
+  alwaysOn: json['alwaysOn'] as bool? ?? false,
+  excludeSSIDs:
+      (json['excludeSSIDs'] as List<dynamic>?)
+          ?.map((e) => e as String)
+          .toList() ??
+      const [],
+);
+
+Map<String, dynamic> _$SharedStateToJson(_SharedState instance) =>
+    <String, dynamic>{
+      'setupParams': instance.setupParams,
+      'vpnOptions': instance.vpnOptions,
+      'stopTip': instance.stopTip,
+      'startTip': instance.startTip,
+      'currentProfileName': instance.currentProfileName,
+      'stopText': instance.stopText,
+      'onlyStatisticsProxy': instance.onlyStatisticsProxy,
+      'showStopAction': instance.showStopAction,
+      'networkSpeedNotification': instance.networkSpeedNotification,
+      'collapseQuickSettingsPanel': instance.collapseQuickSettingsPanel,
+      'showQuickSettingsProfileName': instance.showQuickSettingsProfileName,
+      'alwaysOn': instance.alwaysOn,
+      'excludeSSIDs': instance.excludeSSIDs,
+    };

@@ -1,0 +1,22 @@
+package cc.flclash.mg.models
+
+import cc.flclash.mg.service.models.VpnOptions
+import com.google.gson.annotations.SerializedName
+
+data class SharedState(
+    val currentProfileName: String = "FlClash",
+    val onlyStatisticsProxy: Boolean = false,
+    val showStopAction: Boolean = true,
+    val networkSpeedNotification: Boolean = false,
+    val collapseQuickSettingsPanel: Boolean = true,
+    val showQuickSettingsProfileName: Boolean = true,
+    val vpnOptions: VpnOptions? = null,
+    val setupParams: SetupParams? = null,
+)
+
+data class SetupParams(
+    @SerializedName("test-url")
+    val testUrl: String,
+    @SerializedName("selected-map")
+    val selectedMap: Map<String, String>,
+)
